@@ -139,13 +139,15 @@ class BetPlacerGUI:
                                  fg=C_MUTED, font=("Segoe UI", 9))
         self._ver_lbl.pack(side="right", padx=(0, 12))
 
+        # Sárga keretes stílus — mint a fő dashboard gombjai
+        # (border: 1px solid #FDB900, arany szöveg, sötét háttér).
         self._update_btn = tk.Button(
             hdr, text="Frissítés keresése", command=self._on_update_click,
-            bg=C_CARD, fg=C_MUTED,
-            activebackground=C_BORDER, activeforeground=C_ACCENT,
+            bg=C_BTN_BG, fg=C_ACCENT,
+            activebackground="#1a3a1a", activeforeground=C_ACCENT,
             relief="flat", bd=0, padx=10, pady=3,
             font=("Segoe UI", 9), cursor="hand2",
-            highlightthickness=1, highlightbackground=C_BORDER,
+            highlightthickness=1, highlightbackground=C_ACCENT,
         )
         self._update_btn.pack(side="right", padx=(0, 10))
 
