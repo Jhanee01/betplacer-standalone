@@ -1,0 +1,14 @@
+# Titkok és személyes adatok — SOHA ne kerüljenek a repóba
+.env
+*.session
+*.session-journal
+
+# Futás közbeni / generált
+logs/
+__pycache__/
+*.pyc
+
+# Frissítő melléktermékek
+update.zip
+_update_tmp/
+_release_staging/
