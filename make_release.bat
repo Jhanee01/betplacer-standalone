@@ -27,9 +27,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$st='_release_staging';" ^
   "if(Test-Path $st){Remove-Item -Recurse -Force $st};" ^
   "New-Item -ItemType Directory $st | Out-Null;" ^
-  "$excludeNames=@('.env','update.zip');" ^
-  "$excludeExt=@('.pyc','.session');" ^
+  "$excludeNames=@('.env','update.zip','strategy_stakes.json');" ^
+  "$excludeExt=@('.pyc','.session','.spec');" ^
   "Get-ChildItem -File | Where-Object { $excludeNames -notcontains $_.Name -and $excludeExt -notcontains $_.Extension } | Copy-Item -Destination $st;" ^
+  "if(Test-Path 'assets'){Copy-Item -Recurse -Force 'assets' (Join-Path $st 'assets')};" ^
   "if(Test-Path 'update.zip'){Remove-Item -Force 'update.zip'};" ^
   "Compress-Archive -Path ($st+'\*') -DestinationPath 'update.zip' -Force;" ^
   "Remove-Item -Recurse -Force $st"

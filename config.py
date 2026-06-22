@@ -7,7 +7,7 @@ frissítés NEM igényel tokent — a felhasználó gépén semmit nem kell beá
 """
 
 # Klasszikus semver. Minden kiadás előtt EZT kell emelni (lásd make_release.bat).
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 
 # GitHub repó, ahonnan a frissítés jön (owner/repo). Publikus → token nem kell.
 GITHUB_UPDATE_OWNER = "Jhanee01"

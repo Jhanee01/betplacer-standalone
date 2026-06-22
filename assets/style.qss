@@ -1,0 +1,297 @@
+/* ============================================================
+   Fifa Tipster Dashboard — Grass Dark Theme
+   #212121 alap | #272727 kártyák | #FDB900 accent
+   ============================================================ */
+
+/* === Alap === */
+QMainWindow, QWidget {
+    background-color: #212121;
+    color: #e8e8e8;
+    font-family: "Segoe UI", "Inter", sans-serif;
+    font-size: 13px;
+    font-weight: 400;
+}
+
+/* === Sidebar === */
+QWidget#sidebar {
+    background-color: #171923;
+    border-right: 1px solid #0d0f14;
+}
+
+QFrame#sidebarLogo {
+    background-color: #171923;
+    border-bottom: 1px solid #0d0f14;
+}
+
+QWidget#sidebarFooter {
+    background-color: #171923;
+}
+
+QLabel#modeLabel {
+    color: #FDB900;
+    font-size: 11px;
+    font-family: "Segoe UI Semibold";
+    background: transparent;
+}
+
+QLabel#clockLabel {
+    color: #3d4559;
+    font-size: 11px;
+    font-family: "Segoe UI";
+    background: transparent;
+}
+
+/* === Tartalom terület === */
+QWidget#contentView {
+    background-color: #212121;
+}
+
+QLabel#viewTitle {
+    color: #e8e8e8;
+    font-size: 16px;
+    padding-bottom: 16px;
+}
+
+QLabel#placeholder {
+    color: #555555;
+    font-size: 14px;
+}
+
+/* === Panel kártyák — 3D hatás gradienssel === */
+QFrame#card {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #303030,
+        stop:1 #1a1a1a);
+    border: 1px solid #3a3a3a;
+    border-bottom: 2px solid #111111;
+    border-radius: 12px;
+    padding: 16px;
+}
+
+QLabel#cardTitle {
+    color: #666666;
+    font-size: 11px;
+    font-family: "Segoe UI Semibold";
+    text-transform: uppercase;
+}
+
+QLabel#cardValue {
+    color: #e8e8e8;
+    font-size: 24px;
+    font-family: "Segoe UI Semibold";
+}
+
+/* === Táblázatok === */
+QTableWidget {
+    background-color: #272727;
+    alternate-background-color: #2e2e2e;
+    color: #e8e8e8;
+    gridline-color: #333333;
+    border: 1px solid #3a3a3a;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+QTableWidget::item {
+    padding: 8px 12px;
+    min-height: 36px;
+}
+
+QTableWidget::item:selected {
+    background-color: #1e3a1e;
+    color: #e8e8e8;
+}
+
+QHeaderView::section {
+    background-color: #1e1e1e;
+    color: #666666;
+    border: none;
+    border-bottom: 1px solid #3a3a3a;
+    border-right: 1px solid #333333;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-family: "Segoe UI Semibold";
+    text-transform: uppercase;
+}
+
+/* === Gombok (általános — pill alakú) === */
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #FDB900, stop:1 #e0a400);
+    color: #000000;
+    border: none;
+    border-bottom: 2px solid #c48e00;
+    border-radius: 20px;
+    padding: 7px 20px;
+    font-size: 13px;
+    font-family: "Segoe UI Semibold";
+}
+
+QPushButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #ffd54f, stop:1 #ffc733);
+}
+
+QPushButton:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #e0a400, stop:1 #c48e00);
+    border-bottom: 1px solid #2a5010;
+    padding-top: 8px;
+}
+
+QPushButton:disabled {
+    background: #2e2e2e;
+    border-bottom: 2px solid #222222;
+    color: #444444;
+}
+
+/* Nav elemek — NavItem QWidget, stilizálás sidebar.py-ban inline */
+
+/* Toggle / másodlagos gombok */
+QPushButton#toggleBtn {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #303030, stop:1 #1e1e1e);
+    color: #888888;
+    border: 1px solid #3a3a3a;
+    border-bottom: 2px solid #111111;
+    border-radius: 20px;
+    padding: 5px 16px;
+}
+
+QPushButton#toggleBtn:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #FDB900, stop:1 #e0a400);
+    color: #000000;
+    border-bottom: 2px solid #c48e00;
+}
+
+QPushButton#toggleBtn:hover:!checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #383838, stop:1 #252525);
+    color: #e8e8e8;
+}
+
+/* === Státusz jelzők === */
+QLabel#statusDot {
+    font-size: 16px;
+}
+
+QLabel#statusRunning {
+    color: #FDB900;
+    font-size: 13px;
+    font-family: "Segoe UI Semibold";
+}
+
+QLabel#statusStopped {
+    color: #666666;
+    font-size: 13px;
+    font-family: "Segoe UI Semibold";
+}
+
+QLabel#statusWarning {
+    color: #c8a020;
+    font-size: 13px;
+    font-family: "Segoe UI Semibold";
+}
+
+/* === Keresőmező === */
+QLineEdit {
+    background-color: #000000;
+    color: #e8e8e8;
+    border: 1px solid #3a3a3a;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+}
+
+QLineEdit:focus {
+    border: 1px solid #FDB900;
+}
+
+QLineEdit::placeholder {
+    color: #444444;
+}
+
+/* === ScrollBar === */
+QScrollBar:vertical {
+    background-color: #1a1a1a;
+    width: 6px;
+    border-radius: 3px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #3a3a3a;
+    border-radius: 3px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #4a4a4a;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background-color: #1a1a1a;
+    height: 6px;
+    border-radius: 3px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #3a3a3a;
+    border-radius: 3px;
+    min-width: 20px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #4a4a4a;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+/* === ComboBox === */
+QComboBox {
+    background-color: #272727;
+    color: #e8e8e8;
+    border: 1px solid #3a3a3a;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+}
+
+QComboBox:hover {
+    border: 1px solid #FDB900;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #272727;
+    color: #e8e8e8;
+    border: 1px solid #3a3a3a;
+    selection-background-color: #1e3a1e;
+}
+
+/* === Toast értesítők === */
+QFrame#toastSuccess {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #1a2e1a, stop:1 #0d1a0d);
+    border: 1px solid #FDB900;
+    border-radius: 10px;
+}
+
+QFrame#toastError {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #2e1a1a, stop:1 #1a0d0d);
+    border: 1px solid #c0392b;
+    border-radius: 10px;
+}
+
+QFrame#toastWarning {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #2e2a1a, stop:1 #1a180d);
+    border: 1px solid #c8a020;
+    border-radius: 10px;
+}

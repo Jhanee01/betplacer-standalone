@@ -48,7 +48,7 @@ if not exist "%TMPDIR%" (
 
 rem -- 3) Uj kod rairasa (titkok / session / logok kihagyva) -------------------
 echo  Uj verzio telepitese...
-robocopy "%TMPDIR%" "%APP%." /E /XF .env *.session /XD logs __pycache__ _update_tmp >NUL
+robocopy "%TMPDIR%" "%APP%." /E /XF .env *.session strategy_stakes.json /XD logs __pycache__ _update_tmp >NUL
 
 rem -- 4) Takaritas ------------------------------------------------------------
 rmdir /s /q "%TMPDIR%" 2>NUL
@@ -57,7 +57,11 @@ del /q "%ZIP%" 2>NUL
 rem -- 5) Ujrainditas ----------------------------------------------------------
 echo  Kesz! A BetPlacer ujraindul...
 timeout /t 1 /nobreak >NUL
-start "" "%APP%run.bat"
+if exist "%APP%BetPlacer.exe" (
+    start "" "%APP%BetPlacer.exe"
+) else (
+    start "" "%APP%run.bat"
+)
 
 endlocal
 exit /b 0

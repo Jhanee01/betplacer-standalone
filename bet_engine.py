@@ -408,6 +408,11 @@ def click_odds_by_teams(page, frame, tip: ParsedTip):
     """
     Ha van event_id: az eredeti bet_placer.py módszerrel keres (biztonságos).
     Ha nincs event_id: csapatnév alapú fallback.
+
+    Piac szerint kattint:
+      OU   — OddsParameter (gólvonal) szerint, idx 0/1 = Over/Under; inner_text fallback
+      1X2  — a gomb OddsButton__ShortText felirata szerint (hazai/döntetlen/vendég)
+
     Visszatérési értékek:
       True  — sikeres kattintás
       False — esemény megvan, de gomb nem (nem retryolható)
@@ -427,9 +432,8 @@ def click_odds_by_teams(page, frame, tip: ParsedTip):
             screenshot(page, "esemeny_nem_talalt")
             return None
 
-    market = "OU"
-    pick   = tip.pick
-    line   = str(tip.line)
+    market = (tip.market or "OU").strip().upper()
+    pick   = (tip.pick or "").strip().upper()
 
     try:
         btn_count = ev.locator("button[class*='OddsButton']").count()
@@ -437,44 +441,67 @@ def click_odds_by_teams(page, frame, tip: ParsedTip):
     except Exception:
         pass
 
-    # 1. kísérlet: OddsParameter span alapján
-    params = ev.locator("span[class*='OddsParameter']")
-    for i in range(params.count()):
-        try:
-            txt = params.nth(i).inner_text(timeout=800).strip().replace(",", ".")
-            if txt != line:
-                continue
-            block = params.nth(i).locator("xpath=ancestor::div[1]").first
-            btns  = block.locator("button[class*='OddsButton']")
-            idx   = 0 if pick == "OVER" else 1
-            btn   = btns.nth(idx)
-            if btn.count() > 0:
-                log(f"  O/U {line} {pick} → kattintás")
-                human_click(page, btn)
-                return True
-        except Exception:
-            pass
+    if market == "OU":
+        line = str(tip.line)
+        # 1. kísérlet: OddsParameter span alapján
+        params = ev.locator("span[class*='OddsParameter']")
+        for i in range(params.count()):
+            try:
+                txt = params.nth(i).inner_text(timeout=800).strip().replace(",", ".")
+                if txt != line:
+                    continue
+                block = params.nth(i).locator("xpath=ancestor::div[1]").first
+                btns  = block.locator("button[class*='OddsButton']")
+                idx   = 0 if pick == "OVER" else 1
+                btn   = btns.nth(idx)
+                if btn.count() > 0:
+                    log(f"  O/U {line} {pick} → kattintás")
+                    human_click(page, btn)
+                    return True
+            except Exception:
+                pass
 
-    # 2. kísérlet: button inner_text alapján
-    log("  OddsParameter fallback, inner_text keresés...")
-    btns = ev.locator("button[class*='OddsButton']")
-    for i in range(btns.count()):
-        try:
-            raw  = btns.nth(i).inner_text(timeout=800)
-            norm = raw.casefold().replace("ö","o").replace("á","a").replace("é","e").replace("í","i").replace("ő","o").replace("ú","u").replace("ü","u")
-            hit = (
-                (pick == "OVER"  and ("tobb" in norm or "over" in norm or ("mint" in norm and "kevesebb" not in norm))) or
-                (pick == "UNDER" and ("kevesebb" in norm or "under" in norm or "kevés" in raw.casefold()))
-            )
-            if hit:
-                log(f"  O/U {pick} (inner_text) → kattintás")
-                human_click(page, btns.nth(i))
-                return True
-        except Exception:
-            pass
+        # 2. kísérlet: button inner_text alapján
+        log("  OddsParameter fallback, inner_text keresés...")
+        btns = ev.locator("button[class*='OddsButton']")
+        for i in range(btns.count()):
+            try:
+                raw  = btns.nth(i).inner_text(timeout=800)
+                norm = raw.casefold().replace("ö","o").replace("á","a").replace("é","e").replace("í","i").replace("ő","o").replace("ú","u").replace("ü","u")
+                hit = (
+                    (pick == "OVER"  and ("tobb" in norm or "over" in norm or ("mint" in norm and "kevesebb" not in norm))) or
+                    (pick == "UNDER" and ("kevesebb" in norm or "under" in norm or "kevés" in raw.casefold()))
+                )
+                if hit:
+                    log(f"  O/U {pick} (inner_text) → kattintás")
+                    human_click(page, btns.nth(i))
+                    return True
+            except Exception:
+                pass
 
-    log(f"  odds gomb nem található: {pick} {line}")
-    screenshot(page, f"odds_nem_talalt_{pick}")
+    elif market == "1X2":
+        # A kimenetel-gombok felirata (ShortText) alapján: Hazai/Döntetlen/Vendég.
+        btns = ev.locator("button[class*='OddsButton']")
+        for i in range(btns.count()):
+            try:
+                label = (_inner(btns.nth(i).locator("span[class*='OddsButton__ShortText']")) or "").casefold()
+                hit = (
+                    (pick == "HOME" and ("hazai"     in label or "home" in label)) or
+                    (pick == "DRAW" and ("döntetlen" in label or "draw" in label)) or
+                    (pick == "AWAY" and ("vendég"    in label or "away" in label))
+                )
+                if hit:
+                    log(f"  1X2 {pick} → kattintás")
+                    human_click(page, btns.nth(i))
+                    return True
+            except Exception:
+                pass
+
+    else:
+        log(f"  ismeretlen piac: {market}")
+
+    log(f"  odds gomb nem található: {market} {pick} {tip.line if tip.line is not None else ''}")
+    screenshot(page, f"odds_nem_talalt_{market}_{pick}")
     return False
 
 
@@ -699,15 +726,19 @@ class BetEngine:
         self._page    = None
         self._browser = None
 
-    def place(self, tip: ParsedTip) -> str:
-        """Visszatérés: 'ok' | 'fail' | 'notfound'."""
+    def place(self, tip: ParsedTip, stake: int = None) -> str:
+        """Visszatérés: 'ok' | 'fail' | 'notfound'.
+
+        `stake`: ha meg van adva, ezzel a téttel rak (stratégiánkénti tét);
+        egyébként az induláskori alap tét (self._stake)."""
         if self._page is None:
             return "fail"
+        bet_stake = self._stake if stake is None else int(stake)
         try:
             return place_tip(
                 self._page, tip,
                 self._username, self._password,
-                self._stake, self._dry_run,
+                bet_stake, self._dry_run,
             )
         except Exception as exc:
             log(f"  kivétel: {exc}")

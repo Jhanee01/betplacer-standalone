@@ -58,6 +58,17 @@ def _allow_sleep():
         pass
 
 
+def _fmt_tip_line(tip) -> str:
+    """Egységes egysoros tipp-formátum az értesítésekhez (tét NÉLKÜL, játékosnevekkel).
+    A standalone home_team/away_team már tartalmazza a játékost zárójelben
+    (pl. 'Germany (Manuel)'). Pl.: '14:52 | Germany (Manuel) vs Scotland (John) | OU UNDER 6.5'."""
+    if tip.market == "OU" and tip.line is not None:
+        market_pick = f"OU {tip.pick} {tip.line}"
+    else:
+        market_pick = f"{tip.market} {tip.pick}"
+    return f"{tip.time} | {tip.home_team} vs {tip.away_team} | {market_pick}"
+
+
 def _read_config() -> SimpleNamespace:
     """Beállítások beolvasása env-ből + hiányzó kulcsok kigyűjtése."""
     username = os.getenv("TIPPMIXPRO_USER", "")
@@ -117,26 +128,28 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         log("Futtasd újra a beállítási varázslót: python main.py --setup", "muted")
         return
 
+    # Stratégiánkénti tét — induláskori pillanatkép (a GUI futás közben zárolja a
+    # szerkesztést). Ha egy stratégiához nincs külön tét, a globális cfg.stake él.
+    from stake_store import load_stakes
+    stake_map = load_stakes()
+    if stake_map:
+        log("Stratégiánkénti tét: " + ", ".join(
+            f"{k}={v}Ft" for k, v in stake_map.items()), "muted")
+
     # ── Telegram bot értesítés sikertelen fogadáskor ──────────────────────────
     # Egy KÜLÖN bot küldi (Bot API), így BEJÖVŐ üzenetként push-értesítést ad a
     # telefonon. A bot tokent és a chat_id-t a setup wizard állítja be.
     # Kikapcsolható: NOTIFY_ON_FAIL=0.
-    notify_on_fail   = os.getenv("NOTIFY_ON_FAIL", "1") != "0"
     notify_bot_token = os.getenv("NOTIFY_BOT_TOKEN", "").strip()
     notify_chat_id   = os.getenv("NOTIFY_CHAT_ID", "").strip()
-    notify_ready     = notify_on_fail and bool(notify_bot_token) and bool(notify_chat_id)
-    if notify_on_fail and not notify_ready:
-        log("Értesítő bot nincs beállítva — sikertelen fogadásnál nem lesz "
-            "Telegram-értesítés. (python main.py --setup)", "muted")
+    notify_on_fail   = os.getenv("NOTIFY_ON_FAIL", "1") != "0"
+    notify_on_ok     = os.getenv("NOTIFY_ON_OK", "1") != "0"   # sikeres megrakás is — alapból BE
+    notify_bot_ready = bool(notify_bot_token) and bool(notify_chat_id)
+    if (notify_on_fail or notify_on_ok) and not notify_bot_ready:
+        log("Értesítő bot nincs beállítva — nem lesz Telegram-értesítés. "
+            "(python main.py --setup)", "muted")
 
-    async def _notify_fail(tip, reason: str = ""):
-        if not notify_ready:
-            return
-        msg = ("❌ Sikertelen fogadás\n"
-               f"{tip.time}  {tip.home_team} vs {tip.away_team}\n"
-               f"{tip.pick} {tip.line} @ {tip.odds}")
-        if reason:
-            msg += f"\nOk: {reason}"
+    async def _send_notify(msg: str):
         try:
             import notifier
             ok = await loop.run_in_executor(
@@ -146,6 +159,19 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 "muted" if ok else "warn")
         except Exception as e:
             log(f"Értesítés küldése sikertelen: {e}", "warn")
+
+    async def _notify_ok(tip):
+        if not (notify_on_ok and notify_bot_ready):
+            return
+        await _send_notify(f"✅ Tipp megrakva\n{_fmt_tip_line(tip)}")
+
+    async def _notify_fail(tip, reason: str = ""):
+        if not (notify_on_fail and notify_bot_ready):
+            return
+        msg = f"❌ Sikertelen fogadás\n{_fmt_tip_line(tip)}"
+        if reason:
+            msg += f"\nOk: {reason}"
+        await _send_notify(msg)
 
     # Gép ébren tartása a teljes figyelési munkamenet alatt.
     if _prevent_sleep():
@@ -183,7 +209,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         delay = random.uniform(30, 120)
         log(f"Új tipp érkezett — {delay:.0f} mp múlva rakjuk meg:\n"
             f"  {tip.time}  {tip.home_team} vs {tip.away_team}\n"
-            f"  {tip.pick} {tip.line} @ {tip.odds}", "tip")
+            f"  {tip.pick_str} @ {tip.odds}", "tip")
         _foot(f"Várakozás {delay:.0f} mp...")
         _status(key, tip, "pending")
         await asyncio.sleep(delay)
@@ -192,13 +218,16 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
 
         mode          = "[DRY RUN] " if cfg.dry_run else ""
         event_retries = 0
+        tip_stake     = stake_map.get(tip.strategy_key, cfg.stake)
+        if tip_stake != cfg.stake:
+            log(f"  tét ehhez a stratégiához ({tip.strategy_key}): {tip_stake} Ft", "muted")
 
         while True:
-            log(f"Megrakás: {tip.pick} {tip.line}...", "info")
+            log(f"Megrakás: {tip.pick_str} — {tip_stake} Ft...", "info")
             _foot("Fogadás folyamatban...")
             _status(key, tip, "placing")
             try:
-                result = await loop.run_in_executor(executor, lambda: engine.place(tip))
+                result = await loop.run_in_executor(executor, lambda: engine.place(tip, tip_stake))
             except Exception as e:
                 log(f"Kivétel a fogadás során: {e}", "error")
                 traceback.print_exc()
@@ -211,6 +240,8 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 log(f"[BET_OK] {mode}{tip}", "ok")
                 _foot("Fogadás OK ✓")
                 _status(key, tip, "ok")
+                if not cfg.dry_run:
+                    await _notify_ok(tip)
                 return
 
             if result == "fail":
