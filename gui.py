@@ -527,6 +527,13 @@ class BetPlacerWindow(QMainWindow):
         add_btn.setStyleSheet(BTN_OUTLINE)
         add_btn.clicked.connect(self._on_add_strategy)
         row.addWidget(add_btn)
+        self._save_stakes_btn = QPushButton("Mentés")
+        self._save_stakes_btn.setStyleSheet(BTN_OUTLINE)
+        self._save_stakes_btn.setToolTip(
+            "A stratégiánkénti tétek mentése most (Indításkor egyébként "
+            "automatikusan is mentődik).")
+        self._save_stakes_btn.clicked.connect(self._save_stakes_clicked)
+        row.addWidget(self._save_stakes_btn)
         row.addStretch(1)
         lay.addLayout(row)
 
@@ -589,6 +596,27 @@ class BetPlacerWindow(QMainWindow):
         w = self._stake_table.cellWidget(r, 0)
         if w is not None:
             w.setFocus()
+
+    def _save_stakes_clicked(self):
+        """A stratégiánkénti tétek azonnali mentése (Indítás nélkül is)."""
+        stakes = self._collect_stake_table()
+        stake_store.save_stakes(stakes)
+        # Név megvan, de tét üres → nem tárolódik (az alap tétet kapja). Jelezzük.
+        incomplete = []
+        for r in range(self._stake_table.rowCount()):
+            name = self._strategy_name_at(r)
+            ed = self._stake_table.cellWidget(r, 1)
+            sval = ed.text().strip() if isinstance(ed, QLineEdit) else ""
+            if name and not sval:
+                incomplete.append(name)
+        if stakes:
+            self._log("Stratégiánkénti tét mentve: " + ", ".join(
+                f"{k}={v}" for k, v in stakes.items()), "ok")
+        else:
+            self._log("Nincs menthető tét — írj számot a stratégia mellé.", "muted")
+        if incomplete:
+            self._log("Tét nélkül (alap tétet kap, nem tárolódik): "
+                      + ", ".join(incomplete), "warn")
 
     def _strategy_name_at(self, r: int) -> str:
         """A r. sor stratégia-neve — beírható (cellWidget) vagy fix (item) cellából."""
@@ -704,6 +732,7 @@ class BetPlacerWindow(QMainWindow):
             self._stake_entry.setEnabled(False)
             self._channel_entry.setEnabled(False)
             self._stake_table.setEnabled(False)
+            self._save_stakes_btn.setEnabled(False)
         else:
             self._status_lbl.setText("● LEÁLLÍTVA")
             self._status_lbl.setStyleSheet(f"color:{C_FG}; font-weight:600;")
@@ -712,6 +741,7 @@ class BetPlacerWindow(QMainWindow):
             self._stake_entry.setEnabled(True)
             self._channel_entry.setEnabled(True)
             self._stake_table.setEnabled(True)
+            self._save_stakes_btn.setEnabled(True)
 
     # ── A core/háttér ezeket hívja (háttérszálból) → signal emit ───────────────
 
@@ -850,7 +880,20 @@ class BetPlacerWindow(QMainWindow):
             # mert a jel az uvicorn asyncio-száláról érkezik).
             self.remote_server.restart_requested.connect(self._remote_restart)
 
-            host, port = config.RIM_REMOTE_HOST, config.RIM_REMOTE_PORT
+            host = config.RIM_REMOTE_HOST
+            want_port = config.RIM_REMOTE_PORT
+            # Foglalt port (pl. bennragadt korábbi példány) ne döntse el a remote-ot:
+            # keresünk egy szabadot a kívánt porttól felfelé.
+            port = self._free_port(host, want_port)
+            if port is None:
+                self.remote_server = None
+                self._log(f"Remote nem indult: a {want_port}–{want_port + 9} portok "
+                          "mind foglaltak (fut már egy másik BetPlacer példány?).",
+                          "warn")
+                return
+            if port != want_port:
+                self._log(f"A {want_port} port foglalt — a remote a {port} "
+                          "porton indul.", "muted")
 
             def _serve():
                 try:
@@ -870,6 +913,21 @@ class BetPlacerWindow(QMainWindow):
         except Exception as e:
             self.remote_server = None
             self._log(f"Remote nem indult el: {e}", "warn")
+
+    def _free_port(self, host: str, start: int, span: int = 10):
+        """Az első szabad TCP-port `start`-tól felfelé (span-ig), vagy None."""
+        import socket
+        bind_host = "" if host in ("0.0.0.0", "") else host
+        for p in range(start, start + span):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s.bind((bind_host, p))
+                return p
+            except OSError:
+                continue
+            finally:
+                s.close()
+        return None
 
     def _remote_restart(self):
         """Telefonról kért újraindítás (GUI-szál): leállít, megvárja a leállást, indít."""
