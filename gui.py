@@ -23,6 +23,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import (
     QIcon, QColor, QTextCursor, QPixmap, QImage, QFont, QIntValidator,
+    QPainter, QPen,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
@@ -935,6 +936,37 @@ class BetPlacerWindow(QMainWindow):
                     "Nem sikerült automatikusan ellenőrizni a frissítést.\n\n"
                     f"{reason}")
 
+    def _amber_icon(self, glyph: str = "?") -> QPixmap:
+        """Dashboard-arany (#FDB900) kör-ikon a Qt kék alapikonja helyett."""
+        size = 64
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        amber = QColor(C_ACCENT)
+        pen = QPen(amber)
+        pen.setWidth(4)
+        p.setPen(pen)
+        p.drawEllipse(5, 5, size - 10, size - 10)
+        f = QFont("Segoe UI", 30)
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(pm.rect(), Qt.AlignCenter, glyph)
+        p.end()
+        return pm
+
+    def _styled_dialog(self, title: str, text: str, glyph: str = "?"):
+        """QMessageBox a dashboard kinézetével: arany ikon + sárga keretes gombok.
+
+        A hívó adja hozzá a gombokat (addButton) és hívja az exec()-et.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setIconPixmap(self._amber_icon(glyph))
+        box.setStyleSheet(BTN_OUTLINE)
+        return box
+
     def _do_update(self):
         data = self._update_info
         if not data or not data.get("asset_url"):
@@ -951,7 +983,11 @@ class BetPlacerWindow(QMainWindow):
             msg += f"\n{notes}\n"
         msg += ("\nFrissíted most? A program letölti az új verziót, bezár, "
                 "és automatikusan újraindul.")
-        if QMessageBox.question(self, "Frissítés elérhető", msg) != QMessageBox.Yes:
+        box = self._styled_dialog("Frissítés elérhető", msg)
+        yes = box.addButton("Frissítés most", QMessageBox.YesRole)
+        box.addButton("Később", QMessageBox.NoRole)
+        box.exec()
+        if box.clickedButton() is not yes:
             return
 
         if self._running:
@@ -995,10 +1031,9 @@ class BetPlacerWindow(QMainWindow):
         except Exception:
             url = ("https://github.com/Jhanee01/betplacer-standalone/"
                    "releases/latest")
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Warning)
-        box.setWindowTitle("Frissítés")
-        box.setText(message + "\n\nMegnyitod a letöltést böngészőben?")
+        box = self._styled_dialog(
+            "Frissítés", message + "\n\nMegnyitod a letöltést böngészőben?",
+            glyph="!")
         yes = box.addButton("Letöltés böngészőből", QMessageBox.AcceptRole)
         box.addButton("Mégse", QMessageBox.RejectRole)
         box.exec()
