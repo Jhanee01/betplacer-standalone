@@ -534,6 +534,9 @@ class BetPlacerWindow(QMainWindow):
             "automatikusan is mentődik).")
         self._save_stakes_btn.clicked.connect(self._save_stakes_clicked)
         row.addWidget(self._save_stakes_btn)
+        self._stake_status_lbl = QLabel("")
+        self._stake_status_lbl.setStyleSheet(f"color:{C_MUTED}; font-size:12px;")
+        row.addWidget(self._stake_status_lbl)
         row.addStretch(1)
         lay.addLayout(row)
 
@@ -597,26 +600,55 @@ class BetPlacerWindow(QMainWindow):
         if w is not None:
             w.setFocus()
 
+    def _set_stake_status(self, text: str, color: str):
+        self._stake_status_lbl.setText(text)
+        weight = "font-weight:600;" if color != C_MUTED else ""
+        self._stake_status_lbl.setStyleSheet(f"color:{color}; font-size:12px; {weight}")
+
+    def _lock_strategy_name(self, r: int, name: str):
+        """A r. sor BEÍRHATÓ névmezőjét fix, nem-szerkeszthető cellára cseréli
+        (kiszürkül, mint a beépített stratégiák) — vizuálisan jelzi, hogy mentve van."""
+        self._stake_table.removeCellWidget(r, 0)
+        it = QTableWidgetItem(name)
+        it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        self._stake_table.setItem(r, 0, it)
+
     def _save_stakes_clicked(self):
         """A stratégiánkénti tétek azonnali mentése (Indítás nélkül is)."""
         stakes = self._collect_stake_table()
-        stake_store.save_stakes(stakes)
-        # Név megvan, de tét üres → nem tárolódik (az alap tétet kapja). Jelezzük.
-        incomplete = []
+        ok = stake_store.save_stakes(stakes)
+        if not ok:
+            self._set_stake_status("✗ Mentés sikertelen — a mappa nem írható.", C_RED)
+            self._log("Stratégiánkénti tét mentése SIKERTELEN — a program mappája "
+                      "nem írható (próbáld másik mappából futtatni).", "error")
+            return
+
+        # A sikeresen mentett EGYEDI (kézzel beírt) nevek FIXre váltanak — „kiszürkülnek".
+        # A tét nélkül maradt egyedi nevek szerkeszthetők maradnak (azokra figyelünk).
+        pending = []
         for r in range(self._stake_table.rowCount()):
-            name = self._strategy_name_at(r)
-            ed = self._stake_table.cellWidget(r, 1)
-            sval = ed.text().strip() if isinstance(ed, QLineEdit) else ""
-            if name and not sval:
-                incomplete.append(name)
+            w = self._stake_table.cellWidget(r, 0)
+            if not isinstance(w, QLineEdit):
+                continue
+            name = w.text().strip()
+            if name in stakes:
+                self._lock_strategy_name(r, name)
+            elif name:
+                pending.append(name)
+
         if stakes:
+            self._set_stake_status(f"✓ Mentve — {len(stakes)} stratégia", C_GREEN)
             self._log("Stratégiánkénti tét mentve: " + ", ".join(
                 f"{k}={v}" for k, v in stakes.items()), "ok")
         else:
+            self._set_stake_status("Nincs menthető tét — írj számot egy sor mellé.",
+                                   C_MUTED)
             self._log("Nincs menthető tét — írj számot a stratégia mellé.", "muted")
-        if incomplete:
-            self._log("Tét nélkül (alap tétet kap, nem tárolódik): "
-                      + ", ".join(incomplete), "warn")
+        if pending:
+            self._set_stake_status(
+                f"⚠ Tét nélkül nem mentődik: {', '.join(pending)}", "#f2cc0c")
+            self._log("Tét nélkül (adj tétet, hogy mentődjön): "
+                      + ", ".join(pending), "warn")
 
     def _strategy_name_at(self, r: int) -> str:
         """A r. sor stratégia-neve — beírható (cellWidget) vagy fix (item) cellából."""
@@ -905,14 +937,38 @@ class BetPlacerWindow(QMainWindow):
                     self._log(f"Remote: a webszerver leállt: {e}", "warn")
 
             threading.Thread(target=_serve, daemon=True, name="remote-server").start()
-            print(f"[Remote] Webszerver: http://{host}:{port}/?token={token}")
+            # A 0.0.0.0 csak BIND-cím (minden interfész) — böngészőben nem nyitható.
+            # Megjelenítéshez a 127.0.0.1-et használjuk.
+            disp_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+            print(f"[Remote] Webszerver: http://{disp_host}:{port}/?token={token}")
             self._log(f"Remote elérhető — helyben: "
                       f"http://127.0.0.1:{port}/?token={token}", "muted")
-            self._log("Telefonról: a Tailscale-cím (100.x.y.z) ugyanezzel a "
-                      "?token=... végződéssel.", "muted")
+            ts_ip = self._tailscale_ip()
+            if ts_ip:
+                self._log(f"Telefonról: http://{ts_ip}:{port}/?token={token}", "muted")
+            else:
+                self._log("Telefonról: a Tailscale-cím (100.x.y.z) ugyanezzel a "
+                          "?token=... végződéssel.", "muted")
         except Exception as e:
             self.remote_server = None
             self._log(f"Remote nem indult el: {e}", "warn")
+
+    def _tailscale_ip(self):
+        """A gép Tailscale-IP-je (100.64.0.0/10), ha megtalálható — különben None."""
+        import socket
+        try:
+            _, _, ips = socket.gethostbyname_ex(socket.gethostname())
+        except Exception:
+            ips = []
+        for ip in ips:
+            parts = ip.split(".")
+            if len(parts) == 4 and parts[0] == "100":
+                try:
+                    if 64 <= int(parts[1]) <= 127:
+                        return ip
+                except ValueError:
+                    pass
+        return None
 
     def _free_port(self, host: str, start: int, span: int = 10):
         """Az első szabad TCP-port `start`-tól felfelé (span-ig), vagy None."""

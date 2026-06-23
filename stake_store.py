@@ -44,8 +44,8 @@ def load_stakes() -> dict:
     return {}
 
 
-def save_stakes(stakes: dict) -> None:
-    """A térkép kiírása JSON-be (csak pozitív egész tétek)."""
+def save_stakes(stakes: dict) -> bool:
+    """A térkép kiírása JSON-be (csak pozitív egész tétek). True, ha sikerült."""
     clean = {}
     for k, v in stakes.items():
         try:
@@ -57,5 +57,6 @@ def save_stakes(stakes: dict) -> None:
     try:
         STAKES_PATH.write_text(
             json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
     except Exception:
-        pass
+        return False
