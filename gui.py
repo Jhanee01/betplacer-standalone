@@ -314,6 +314,9 @@ class BetPlacerWindow(QMainWindow):
     sigStatus  = Signal(str, object, str, str)  # key, tip, status, detail
     sigRunning = Signal(bool)              # futási állapot változott
     sigUpdate  = Signal(str, object)       # frissítés-gomb állapot, info
+    sigCheckResult  = Signal(object, bool, bool)  # info, checked, silent
+    sigUpdateFailed = Signal(str)          # frissítés-hiba szöveg
+    sigQuitForUpdate = Signal()            # kilépés a frissítés alkalmazásához
 
     def __init__(self):
         super().__init__()
@@ -341,6 +344,9 @@ class BetPlacerWindow(QMainWindow):
         self.sigStatus.connect(self._apply_status)
         self.sigRunning.connect(self._apply_running)
         self.sigUpdate.connect(self._apply_update_button)
+        self.sigCheckResult.connect(self._on_check_result)
+        self.sigUpdateFailed.connect(self._update_failed)
+        self.sigQuitForUpdate.connect(self._quit_for_update)
 
         self.remote_server = None
 
@@ -892,33 +898,37 @@ class BetPlacerWindow(QMainWindow):
                         info = rel
             except Exception:
                 pass
-
-            def _done():
-                self._checking = False
-                self._update_info = info
-                if info:
-                    self.sigUpdate.emit("available", info)
-                    self._log(f"Új verzió elérhető: {info['tag']} — "
-                              f"kattints a Frissítés gombra.", "tip")
-                elif checked:
-                    self.sigUpdate.emit("uptodate", None)
-                    if not silent:
-                        self._log("A program naprakész.", "muted")
-                else:
-                    self.sigUpdate.emit("idle", None)
-                    try:
-                        import updater
-                        reason = updater.last_error() or "Ismeretlen hiba."
-                    except Exception:
-                        reason = "Ismeretlen hiba."
-                    self._log(f"Frissítés-ellenőrzés sikertelen: {reason}", "error")
-                    if not silent:
-                        self._offer_browser_download(
-                            "Nem sikerült automatikusan ellenőrizni a frissítést.\n\n"
-                            f"{reason}")
-            QTimer.singleShot(0, _done)
+            # Visszajelzés a fő szálra SZIGNÁLON át — a QTimer.singleShot egy
+            # háttérszálról nem sülne el (nincs Qt event loop), így a gomb
+            # örökre „Keresés…”-en ragadna.
+            self.sigCheckResult.emit(info, checked, silent)
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _on_check_result(self, info, checked: bool, silent: bool):
+        """A frissítés-ellenőrzés eredménye — a fő szálon fut (sigCheckResult)."""
+        self._checking = False
+        self._update_info = info
+        if info:
+            self.sigUpdate.emit("available", info)
+            self._log(f"Új verzió elérhető: {info['tag']} — "
+                      f"kattints a Frissítés gombra.", "tip")
+        elif checked:
+            self.sigUpdate.emit("uptodate", None)
+            if not silent:
+                self._log("A program naprakész.", "muted")
+        else:
+            self.sigUpdate.emit("idle", None)
+            try:
+                import updater
+                reason = updater.last_error() or "Ismeretlen hiba."
+            except Exception:
+                reason = "Ismeretlen hiba."
+            self._log(f"Frissítés-ellenőrzés sikertelen: {reason}", "error")
+            if not silent:
+                self._offer_browser_download(
+                    "Nem sikerült automatikusan ellenőrizni a frissítést.\n\n"
+                    f"{reason}")
 
     def _do_update(self):
         data = self._update_info
@@ -949,16 +959,15 @@ class BetPlacerWindow(QMainWindow):
                 import updater
                 zip_path = APP_DIR / "update.zip"
                 if not updater.download_update(data["asset_url"], zip_path):
-                    QTimer.singleShot(0, lambda: self._update_failed(
-                        "A letöltés sikertelen. Próbáld újra később."))
+                    self.sigUpdateFailed.emit(
+                        "A letöltés sikertelen. Próbáld újra később.")
                     return
                 if not updater.apply_update_and_restart(zip_path):
-                    QTimer.singleShot(0, lambda: self._update_failed(
-                        "A frissítő segéd nem indult el."))
+                    self.sigUpdateFailed.emit("A frissítő segéd nem indult el.")
                     return
-                QTimer.singleShot(0, self._quit_for_update)
+                self.sigQuitForUpdate.emit()
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._update_failed(str(e)))
+                self.sigUpdateFailed.emit(str(e))
 
         threading.Thread(target=_work, daemon=True).start()
 
