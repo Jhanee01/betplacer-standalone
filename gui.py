@@ -506,20 +506,22 @@ class BetPlacerWindow(QMainWindow):
         lay = QVBoxLayout(wrap)
         lay.setContentsMargins(2, 6, 2, 2)
 
-        hint = QLabel("Stratégiánkénti tét (Ft). Ami nincs itt felsorolva, "
-                      "az az Alap tétet kapja. Indításkor mentődik.")
+        hint = QLabel(f'<span style="color:{C_ACCENT}; font-weight:700;">FONTOS!</span> '
+                      "Csak akkor módosíts, ha le van állítva a futás.")
         hint.setStyleSheet(f"color:{C_FG}; font-size:12px;")
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
-        self._stake_table = QTableWidget(0, 2)
-        self._stake_table.setHorizontalHeaderLabels(["Stratégia", "Tét (Ft)"])
+        self._stake_table = QTableWidget(0, 3)
+        self._stake_table.setHorizontalHeaderLabels(["Stratégia", "Tét (Ft)", ""])
         self._stake_table.verticalHeader().setVisible(False)
         self._stake_table.setSelectionMode(QAbstractItemView.NoSelection)
         sh = self._stake_table.horizontalHeader()
         sh.setSectionResizeMode(0, QHeaderView.Stretch)
         sh.setSectionResizeMode(1, QHeaderView.Fixed)
+        sh.setSectionResizeMode(2, QHeaderView.Fixed)
         self._stake_table.setColumnWidth(1, 130)
+        self._stake_table.setColumnWidth(2, 40)
         lay.addWidget(self._stake_table)
 
         row = QHBoxLayout()
@@ -588,8 +590,32 @@ class BetPlacerWindow(QMainWindow):
             "QLineEdit:focus{border:1px solid #FDB900;}"
             "QLineEdit:disabled{color:#6b6b6b;border:1px solid #2a2a2a;}")
         self._stake_table.setCellWidget(r, 1, editor)
+
+        # Törlés gomb — csak EGYEDI (nem beépített) stratégiákra. A beépítettek
+        # úgyis visszatérnének, így azokat nincs értelme törölni.
+        deletable = name_editable or (name and name not in stake_store.KNOWN_STRATEGIES)
+        if deletable:
+            del_btn = QPushButton("✕")
+            del_btn.setToolTip("Stratégia törlése")
+            del_btn.setCursor(Qt.PointingHandCursor)
+            del_btn.setStyleSheet(
+                "QPushButton{background:transparent;color:#8d8d9f;border:none;"
+                "font-size:14px;}"
+                "QPushButton:hover{color:#d44a3a;}")
+            del_btn.clicked.connect(self._delete_stake_row)
+            self._stake_table.setCellWidget(r, 2, del_btn)
+
         self._stake_table.setRowHeight(r, 42)
         return r
+
+    def _delete_stake_row(self):
+        """A ✕-re kattintott sor törlése (a gombról visszafejtve az aktuális sort)."""
+        btn = self.sender()
+        for r in range(self._stake_table.rowCount()):
+            if self._stake_table.cellWidget(r, 2) is btn:
+                self._stake_table.removeRow(r)
+                break
+        self._set_stake_status("Törölve — ne felejtsd el a Mentést.", "#f2cc0c")
 
     def _on_add_strategy(self):
         """„+ Stratégia": új sor BEÍRHATÓ névmezővel, fókusszal a névre."""

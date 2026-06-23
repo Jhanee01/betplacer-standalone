@@ -18,7 +18,6 @@ STAKES_PATH = APP_DIR / "strategy_stakes.json"
 # (Team Running Handicap = AH, később; BET365 = nem Tippmixpro, kihagyva.)
 KNOWN_STRATEGIES = [
     "Team Running 8min",          "Team Running 12min",
-    "25 All Time 8min",          "25 All Time 12min",
     "Döntetlen 8min",            "Döntetlen 12min",
     "Team Running Handicap 8min", "Team Running Handicap 12min",
     "CLA",
