@@ -525,7 +525,7 @@ class BetPlacerWindow(QMainWindow):
         row = QHBoxLayout()
         add_btn = QPushButton("+ Stratégia")
         add_btn.setStyleSheet(BTN_OUTLINE)
-        add_btn.clicked.connect(lambda: self._add_stake_row("", ""))
+        add_btn.clicked.connect(self._on_add_strategy)
         row.addWidget(add_btn)
         row.addStretch(1)
         lay.addLayout(row)
@@ -544,13 +544,25 @@ class BetPlacerWindow(QMainWindow):
         for name in names:
             self._add_stake_row(name, str(saved.get(name, "")), placeholder=default)
 
-    def _add_stake_row(self, name: str, stake: str, placeholder: str = ""):
+    def _add_stake_row(self, name: str, stake: str, placeholder: str = "",
+                       name_editable: bool = False) -> int:
         r = self._stake_table.rowCount()
         self._stake_table.insertRow(r)
-        # A stratégia neve fix (kulcs a párosításhoz) — ne lehessen véletlenül átírni.
-        name_item = QTableWidgetItem(name)
-        name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-        self._stake_table.setItem(r, 0, name_item)
+        if name_editable:
+            # Egyéni (kézzel hozzáadott) stratégia: a név BEÍRHATÓ mező. A known /
+            # mentett nevek továbbra is fixek maradnak (lásd az else-ágat).
+            name_editor = QLineEdit(name)
+            name_editor.setPlaceholderText("Stratégia neve…")
+            name_editor.setStyleSheet(
+                "QLineEdit{background:#000000;color:#e8e8e8;border:1px solid #3a3a3a;"
+                "border-radius:6px;padding:4px 8px;}"
+                "QLineEdit:focus{border:1px solid #FDB900;}")
+            self._stake_table.setCellWidget(r, 0, name_editor)
+        else:
+            # A stratégia neve fix (kulcs a párosításhoz) — ne lehessen átírni.
+            name_item = QTableWidgetItem(name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self._stake_table.setItem(r, 0, name_item)
 
         # A tét: MINDIG látható beviteli mező (nem rejtett, dupla-kattintós cella),
         # hogy egyértelmű legyen, hova kell írni. Csak pozitív egész fogadható el.
@@ -567,14 +579,31 @@ class BetPlacerWindow(QMainWindow):
             "QLineEdit:disabled{color:#6b6b6b;border:1px solid #2a2a2a;}")
         self._stake_table.setCellWidget(r, 1, editor)
         self._stake_table.setRowHeight(r, 42)
+        return r
+
+    def _on_add_strategy(self):
+        """„+ Stratégia": új sor BEÍRHATÓ névmezővel, fókusszal a névre."""
+        default = os.getenv("BET_STAKE", "500")
+        r = self._add_stake_row("", "", placeholder=default, name_editable=True)
+        self._stake_table.scrollToBottom()
+        w = self._stake_table.cellWidget(r, 0)
+        if w is not None:
+            w.setFocus()
+
+    def _strategy_name_at(self, r: int) -> str:
+        """A r. sor stratégia-neve — beírható (cellWidget) vagy fix (item) cellából."""
+        w = self._stake_table.cellWidget(r, 0)
+        if isinstance(w, QLineEdit):
+            return w.text().strip()
+        it = self._stake_table.item(r, 0)
+        return it.text().strip() if it else ""
 
     def _collect_stake_table(self) -> dict:
         out = {}
         for r in range(self._stake_table.rowCount()):
-            n_item = self._stake_table.item(r, 0)
             editor = self._stake_table.cellWidget(r, 1)
-            name = (n_item.text().strip() if n_item else "")
-            sval = (editor.text().strip() if editor is not None else "")
+            name = self._strategy_name_at(r)
+            sval = (editor.text().strip() if isinstance(editor, QLineEdit) else "")
             if not name or not sval:
                 continue
             try:
@@ -590,8 +619,7 @@ class BetPlacerWindow(QMainWindow):
         if not strategy:
             return
         for r in range(self._stake_table.rowCount()):
-            it = self._stake_table.item(r, 0)
-            if it and it.text().strip() == strategy:
+            if self._strategy_name_at(r) == strategy:
                 return
         self._add_stake_row(strategy, "", placeholder=os.getenv("BET_STAKE", "500"))
 
