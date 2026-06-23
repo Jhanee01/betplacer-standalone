@@ -599,9 +599,9 @@ class BetPlacerWindow(QMainWindow):
         del_btn.setToolTip("Stratégia törlése")
         del_btn.setCursor(Qt.PointingHandCursor)
         del_btn.setStyleSheet(
-            "QPushButton{background:transparent;color:#8d8d9f;border:none;"
-            "font-size:14px;}"
-            "QPushButton:hover{color:#d44a3a;}")
+            "QPushButton{background:transparent;color:#d44a3a;border:none;"
+            "font-size:16px;font-weight:700;}"
+            "QPushButton:hover{color:#ff6b5a;}")
         del_btn.clicked.connect(self._delete_stake_row)
         self._stake_table.setCellWidget(r, 2, del_btn)
 

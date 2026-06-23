@@ -199,22 +199,45 @@ külön indítás. Egy **token** védi (csak ezzel lehet csatlakozni); a program
 indításkor generál egyet, és a `.env`-be írja. A token az indításkor a naplóban is
 megjelenik (helyi cím + token).
 
-### Beüzemelés (egyszer)
-1. Telepítsd a **Tailscale**-t a gépre és a telefonra, és lépj be **ugyanazzal a
-   fiókkal** mindkettőn.
-2. Nézd meg a gép Tailscale-IP-jét (`100.x.y.z`) a Tailscale appban.
-3. A telefon böngészőjében nyisd meg:
-   `http://100.x.y.z:8765/?token=<a-tokened>`
+### Mit kell telepíteni?
+- **Csak a Tailscale-t** kell telepíteni — se portnyitás, se router-beállítás, se
+  külön szerver nem kell. A BetPlacer maga viszi a web-szervert.
+- A Tailscale ingyenes magáncélra: <https://tailscale.com/download>
 
-A tokent a program naplójában látod (`Remote elérhető — helyben: …?token=…`), vagy
-a `.env` `RIM_REMOTE_TOKEN=` sorában.
+### Beüzemelés (egyszer, ~5 perc)
+1. **Telepítsd a Tailscale-t a GÉPRE** (ahol a BetPlacer fut) és **a TELEFONRA** is.
+2. **Lépj be ugyanazzal a fiókkal** mindkét eszközön (Google/Microsoft/e-mail —
+   mindegy, csak ugyanaz legyen). Így a két eszköz egy privát hálózatba kerül.
+3. A gépen a Tailscale appban nézd meg a gép **Tailscale-IP-jét** (`100.x.y.z`
+   alakú). A telefon ezen a címen éri majd el a gépet, bárhonnan.
+4. Indítsd el a BetPlacert. A **Napló** fülön megjelenik a pontos cím + token, pl.:
+   ```
+   Remote elérhető — helyben: http://127.0.0.1:8766/?token=AbC123...
+   Telefonról: http://100.x.y.z:8766/?token=AbC123...
+   ```
+5. A **telefon böngészőjében** nyisd meg a „Telefonról:" sorban látott teljes
+   címet (IP + port + token). Kész — látod az élő naplót és az Újraindítás gombot.
 
-> Helyi teszt a gépen: `http://127.0.0.1:8765/?token=<a-tokened>`
+> **Helyi teszt a gépen:** `http://127.0.0.1:<port>/?token=<token>`
+> Fontos: a `0.0.0.0` **nem** böngészhető cím (csak „minden interfész" bind) —
+> helyben mindig `127.0.0.1`-et használj.
+
+### Port — ha a Fifa Tipster dashboard is fut
+A dashboard remote-ja **és** a standalone is alapból a **8765**-öt használja. Ha a
+dashboard már fut, a standalone **automatikusan a következő szabad portra lép**
+(8766, 8767, …) — ezt a Napló is kiírja. Tehát a kettő elfér egymás mellett; csak
+ügyelj rá, hogy a telefonon a **naplóban látott portot** nyisd meg, ne fixen a 8765-öt.
+
+### A token
+- A program első indításkor generál egyet, és a `.env` `RIM_REMOTE_TOKEN=` sorába írja.
+- A teljes belépési címet (token-nel) mindig a **Napló** fülön látod indításkor.
+- A token nélkül a kapcsolat elutasításra kerül (ez a biztonsági kapu).
 
 ### Finomhangolás (`.env`, opcionális)
 ```
-RIM_REMOTE_PORT=8765       ← port (alapértelmezett)
+RIM_REMOTE_PORT=8765       ← kívánt port (ha foglalt, automatikusan a következő szabad)
 RIM_REMOTE_ENABLED=false   ← a remote teljes kikapcsolása
+RIM_REMOTE_TOKEN=...        ← a belépési token (a program generálja, kézzel is megadható)
 ```
 
 ---

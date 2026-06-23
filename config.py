@@ -12,7 +12,7 @@ import secrets
 from paths import APP_DIR
 
 # Klasszikus semver. Minden kiadás előtt EZT kell emelni (lásd make_release.bat).
-APP_VERSION = "2.1.8"
+APP_VERSION = "2.1.9"
 
 # GitHub repó, ahonnan a frissítés jön (owner/repo). Publikus → token nem kell.
 GITHUB_UPDATE_OWNER = "Jhanee01"
