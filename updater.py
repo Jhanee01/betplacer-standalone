@@ -68,10 +68,8 @@ def _ssl_context():
 
 def _classify_error(exc) -> str:
     """Egy kivételt EMBERI hibaszöveggé alakít a felhasználónak."""
-    if isinstance(exc, ssl.SSLCertVerificationError):
-        return ("Tanúsítvány-hiba (SSL) — valószínűleg egy vírusirtó vagy céges "
-                "proxy szkenneli a HTTPS-t ezen a gépen. A böngésző működik, a "
-                "program viszont nem éri el a GitHubot. Töltsd le böngészőből.")
+    # A HTTP-hibát kezeljük előbb: a HTTPError is URLError-leszármazott, de a
+    # .reason-ja itt a státuszszöveg, nem a becsomagolt belső kivétel.
     if isinstance(exc, urllib.error.HTTPError):
         if exc.code == 403:
             return ("A GitHub ideiglenesen korlátozta a kéréseket (rate limit). "
@@ -79,11 +77,27 @@ def _classify_error(exc) -> str:
         if exc.code == 404:
             return "A kiadás nem található a GitHubon (404)."
         return f"GitHub HTTP-hiba: {exc.code}."
-    if isinstance(exc, (socket.timeout, TimeoutError)):
+
+    # urllib az SSL/socket hibákat URLError-ba CSOMAGOLJA — a valódi ok a .reason.
+    inner = getattr(exc, "reason", None)
+    cert = next((e for e in (exc, inner)
+                 if isinstance(e, ssl.SSLCertVerificationError)), None)
+    if cert is not None:
+        return ("Tanúsítvány-hiba (SSL) — valószínűleg egy vírusirtó vagy céges "
+                "proxy szkenneli a HTTPS-t ezen a gépen. A böngésző működik, a "
+                "program viszont nem éri el a GitHubot. Töltsd le böngészőből. "
+                f"(részletek: {cert})")
+    if isinstance(exc, ssl.SSLError) or isinstance(inner, ssl.SSLError):
+        return (f"SSL-hiba a GitHub-kapcsolatban: {inner or exc}. "
+                "Töltsd le böngészőből.")
+
+    if isinstance(exc, (socket.timeout, TimeoutError)) or \
+            isinstance(inner, (socket.timeout, TimeoutError)):
         return "Időtúllépés — a GitHub nem válaszolt időben."
     if isinstance(exc, urllib.error.URLError):
         return ("Nem sikerült csatlakozni a GitHubhoz — tűzfal, proxy vagy "
-                "vírusirtó blokkolhatja a programot. Töltsd le böngészőből.")
+                f"vírusirtó blokkolhatja a programot. Töltsd le böngészőből. "
+                f"(részletek: {inner or exc})")
     return f"Ismeretlen hiba: {exc}"
 
 

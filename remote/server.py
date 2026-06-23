@@ -171,8 +171,12 @@ def run_server(host: str, port: int, remote_server: RemoteServer | None = None,
         sys.stderr = open(_os.devnull, "w", encoding="utf-8")
 
     app = create_app(remote_server, token)
+    # log_config=None: ne nyúljon az uvicorn a globális naplózáshoz. A GUI
+    # átirányított stdout-ja (vagy a /dev/null) miatt a beépített formázó-beállítás
+    # elhasalhat ("Unable to configure formatter 'default'"); nekünk amúgy sincs
+    # szükségünk az uvicorn naplóira (a saját napló a RemoteServer-pufferből megy).
     config = uvicorn.Config(app, host=host, port=port, log_level="warning",
-                            access_log=False)
+                            access_log=False, log_config=None)
     server = uvicorn.Server(config)
     server.run()
     # Foglalt portnál az uvicorn nem dob kivételt, csak started=False — érthető hibává

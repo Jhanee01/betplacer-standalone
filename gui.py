@@ -104,6 +104,11 @@ class _Tee:
             except Exception:
                 pass
 
+    def isatty(self):
+        # Néhány könyvtár (pl. az uvicorn naplózó-formázója) lekérdezi a stdout
+        # isatty()-jét; e nélkül AttributeError-rel hasalna el a beállításuk.
+        return False
+
 
 def apply_app_theme(app):
     """qt_material (theme_fdb900.xml) + style.qss overlay + Segoe UI font.
