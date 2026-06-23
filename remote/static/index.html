@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>BetPlacer — Remote</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #0F1115; color: #E6E8EC;
+      display: flex; flex-direction: column; height: 100dvh;
+    }
+    .wrap { display: flex; flex-direction: column; height: 100%; max-width: 600px; width: 100%; margin: 0 auto; }
+    header { background: #1A1D24; padding: 12px 16px; flex: 0 0 auto; }
+    .hrow { display: flex; align-items: center; gap: 10px; }
+    header h1 { font-size: 17px; font-weight: 600; margin: 0; }
+    .sdot { width: 12px; height: 12px; border-radius: 50%; background: #8A8F98; flex: 0 0 auto; }
+    .sdot.run { background: #22C55E; }
+    .sdot.stop { background: #8A8F98; }
+    .summary { margin-top: 6px; font-size: 13px; color: #8A8F98; }
+    .summary.run { color: #22C55E; }
+    .live { margin-left: auto; font-size: 12px; color: #8A8F98; display: flex; align-items: center; gap: 6px; }
+    .live .dot { width: 9px; height: 9px; border-radius: 50%; background: #22C55E; }
+    .live.off .dot { background: #8A8F98; }
+    .live.on .dot { animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+    #log {
+      flex: 1 1 auto; overflow-y: auto; background: #0B0D11; margin: 0; padding: 10px 12px;
+      font-family: ui-monospace, Consolas, Menlo, monospace; font-size: 13px; line-height: 1.45;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    #log .line { color: #E6E8EC; }
+    #log .ts { color: #6B7180; }
+
+    footer { flex: 0 0 auto; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: #1A1D24; }
+    .btn { width: 100%; min-height: 56px; border: none; border-radius: 12px; background: #FDB900; color: #0F1115; font-size: 16px; font-weight: 600; cursor: pointer; }
+    .btn:active { filter: brightness(0.9); }
+    .btn:disabled { opacity: .5; cursor: default; }
+    .btn.ghost { background: #2A2F3A; color: #E6E8EC; }
+
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; padding: 24px; }
+    .overlay.show { display: flex; }
+    .modal { background: #1A1D24; border-radius: 14px; padding: 20px; max-width: 360px; width: 100%; }
+    .modal p { color: #E6E8EC; font-size: 15px; margin: 0 0 18px; }
+    .modal .row { display: flex; gap: 10px; }
+    .modal .row .btn { min-height: 48px; font-size: 15px; }
+
+    .toast { position: fixed; left: 50%; bottom: 88px; transform: translateX(-50%) translateY(20px); background: #22C55E; color: #06210F; padding: 10px 16px; border-radius: 10px; font-size: 14px; font-weight: 600; opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s; max-width: 90%; }
+    .toast.bad { background: #EF4444; color: #2A0707; }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    .denied { position: fixed; inset: 0; background: #0F1115; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; z-index: 10; }
+    .denied.show { display: flex; }
+    .denied .lock { font-size: 48px; }
+    .denied h2 { font-size: 20px; font-weight: 600; margin: 12px 0 6px; }
+    .denied p { color: #8A8F98; font-size: 14px; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="hrow">
+        <span class="sdot" id="sdot"></span>
+        <h1>BetPlacer — Remote</h1>
+        <div class="live off" id="live"><span class="dot"></span><span id="liveText">Csatlakozás…</span></div>
+      </div>
+      <div class="summary" id="summary">Állapot lekérése…</div>
+    </header>
+
+    <div id="log" aria-live="polite"></div>
+
+    <footer>
+      <button class="btn" id="restartBtn">Újraindítás</button>
+    </footer>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <p>Biztosan újraindítod a BetPlacert?</p>
+      <div class="row">
+        <button class="btn ghost" id="cancelBtn">Mégse</button>
+        <button class="btn" id="confirmBtn">Újraindítás</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <div class="denied" id="denied">
+    <div class="lock">🔒</div>
+    <h2>Hozzáférés megtagadva</h2>
+    <p>Hibás vagy hiányzó hozzáférési kulcs.</p>
+  </div>
+
+  <script>
+    const logEl = document.getElementById("log");
+    const liveEl = document.getElementById("live");
+    const liveText = document.getElementById("liveText");
+    const token = new URLSearchParams(location.search).get("token") || "";
+    let denied = false;
+    function showAccessDenied() {
+      denied = true;
+      document.getElementById("denied").classList.add("show");
+      try { if (ws) ws.close(); } catch {}
+    }
+
+    // Napló-szín a kind alapján (a desktop TAG_COLORS-szal összhangban)
+    const KIND_COLORS = {
+      info:"#E6E8EC", muted:"#8A8F98", tip:"#FDB900", ok:"#3ba560",
+      fail:"#d44a3a", warn:"#f2cc0c", error:"#d44a3a"
+    };
+    const colorFor = (k) => KIND_COLORS[k] || "#E6E8EC";
+
+    const MAX = 1000;
+    function nearBottom() { return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60; }
+    function lineEl(e) {
+      const div = document.createElement("div");
+      div.className = "line";
+      div.style.color = colorFor(e.kind);
+      const ts = document.createElement("span");
+      ts.className = "ts"; ts.textContent = e.ts ? `[${e.ts}] ` : "";
+      div.appendChild(ts);
+      div.appendChild(document.createTextNode(e.line));
+      return div;
+    }
+    function renderAll(entries) {
+      logEl.innerHTML = "";
+      for (const e of entries) logEl.appendChild(lineEl(e));
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function pushEntry(e) {
+      const stick = nearBottom();
+      logEl.appendChild(lineEl(e));
+      while (logEl.childElementCount > MAX) logEl.removeChild(logEl.firstChild);
+      if (stick) logEl.scrollTop = logEl.scrollHeight;
+    }
+    function setLive(on) {
+      liveEl.classList.toggle("on", on);
+      liveEl.classList.toggle("off", !on);
+      liveText.textContent = on ? "Élő" : "Újrakapcsolódás…";
+    }
+
+    let ws = null;
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const url = `${proto}://${location.host}/ws/logs` + (token ? `?token=${encodeURIComponent(token)}` : "");
+      ws = new WebSocket(url);
+      ws.onopen = () => setLive(true);
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.t === "hist") {
+          renderAll((msg.lines || []).slice(-MAX));
+        } else if (msg.t === "log") {
+          pushEntry({ ts: msg.ts, line: msg.line, kind: msg.kind });
+        }
+      };
+      ws.onclose = (ev) => {
+        setLive(false);
+        if (ev.code === 1008) { showAccessDenied(); return; }
+        if (!denied) setTimeout(connect, 2000);
+      };
+      ws.onerror = () => { try { ws.close(); } catch {} };
+    }
+    connect();
+
+    // --- Státusz (fut / leállítva) 5 mp-enként ---
+    const sdot = document.getElementById("sdot");
+    const summaryEl = document.getElementById("summary");
+    const apiUrl = (path) => path + (token ? `?token=${encodeURIComponent(token)}` : "");
+    async function pollStatus() {
+      if (denied) return;
+      try {
+        const r = await fetch(apiUrl("/api/status"), { cache: "no-store" });
+        if (r.status === 401) { showAccessDenied(); return; }
+        const data = await r.json();
+        if (data.running) {
+          sdot.className = "sdot run";
+          summaryEl.className = "summary run";
+          summaryEl.textContent = "Fut — figyelés aktív";
+        } else {
+          sdot.className = "sdot stop";
+          summaryEl.className = "summary";
+          summaryEl.textContent = "Leállítva";
+        }
+      } catch (e) {
+        sdot.className = "sdot";
+        summaryEl.className = "summary";
+        summaryEl.textContent = "Állapot nem elérhető";
+      }
+    }
+    pollStatus();
+    setInterval(pollStatus, 5000);
+
+    // --- Újraindítás ---
+    const restartBtn = document.getElementById("restartBtn");
+    const overlay = document.getElementById("overlay");
+    const cancelBtn = document.getElementById("cancelBtn");
+    const confirmBtn = document.getElementById("confirmBtn");
+    const toastEl = document.getElementById("toast");
+    let toastTimer = null;
+    function showToast(text, bad) {
+      toastEl.textContent = text;
+      toastEl.className = "toast show" + (bad ? " bad" : "");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toastEl.className = "toast" + (bad ? " bad" : ""); }, 3000);
+    }
+    const openModal = () => overlay.classList.add("show");
+    const closeModal = () => overlay.classList.remove("show");
+    restartBtn.addEventListener("click", openModal);
+    cancelBtn.addEventListener("click", closeModal);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
+    confirmBtn.addEventListener("click", async () => {
+      closeModal();
+      restartBtn.disabled = true;
+      const original = restartBtn.textContent;
+      restartBtn.textContent = "Újraindítás folyamatban…";
+      try {
+        const r = await fetch(apiUrl("/api/restart"), { method: "POST" });
+        const data = await r.json().catch(() => ({}));
+        if (r.ok && data.ok) showToast(data.message || "Újraindítás elindítva.", false);
+        else showToast(data.message || "Az újraindítás nem sikerült.", true);
+      } catch (e) {
+        showToast("Hálózati hiba az újraindításkor.", true);
+      } finally {
+        setTimeout(() => { restartBtn.disabled = false; restartBtn.textContent = original; }, 2000);
+      }
+    });
+  </script>
+</body>
+</html>

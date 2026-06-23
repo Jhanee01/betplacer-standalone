@@ -50,6 +50,21 @@ rem -- 3) Uj kod rairasa (titkok / session / logok kihagyva) -------------------
 echo  Uj verzio telepitese...
 robocopy "%TMPDIR%" "%APP%." /E /XF .env *.session strategy_stakes.json /XD logs __pycache__ _update_tmp >NUL
 
+rem -- 3b) Uj fuggosegek telepitese -------------------------------------------
+rem  Ha a frissites uj csomagot hozott (pl. PySide6), enelkul a program el sem
+rem  indulna. A mar telepitett csomagokra pip "already satisfied"-et ir (offline
+rem  is gyors). A hibat nem tekintjuk vegzetesnek - lehet, hogy minden megvan.
+echo  Fuggosegek ellenorzese / telepitese... (par masodperc)
+pushd "%APP%."
+python -m pip install -r requirements.txt
+if errorlevel 1 (
+    echo.
+    echo  FIGYELEM: a fuggosegek telepitese nem sikerult teljesen.
+    echo  Ha a program nem indul, futtasd kezzel az install.bat-ot.
+    echo.
+)
+popd
+
 rem -- 4) Takaritas ------------------------------------------------------------
 rmdir /s /q "%TMPDIR%" 2>NUL
 del /q "%ZIP%" 2>NUL

@@ -58,7 +58,8 @@ A beállítások elmentődnek — **következő indításkor már nem kell újra
 
 > A 4. lépés (értesítő bot) **nem kötelező**, de erősen ajánlott: enélkül nem
 > kapsz értesítést, ha egy fogadás nem sikerül. A „Most kihagyom" gombbal
-> átugorható, és később a `python main.py --setup` paranccsal pótolható.
+> átugorható, és **később bármikor pótolható** — a főablak fejlécében az
+> **„Értesítő bot"** gombbal (vagy a `python main.py --setup` paranccsal).
 
 ---
 
@@ -89,6 +90,10 @@ A bot létrehozása kb. 1 perc, **egyszer kell**:
    kijelzőjén. Ha megjött, kész — működik a push.
 
 Ha még nem nyomtál Start-ot, a varázsló szól, hogy tedd meg, majd kattints újra.
+
+> **Utólag is beállítható:** ha a varázslónál kihagytad, a fő ablak fejlécében az
+> **„Értesítő bot"** gombbal bármikor megadhatod a tokent — ugyanaz a folyamat
+> (token → Start → Összekapcsolás), futás közben is.
 
 ---
 
@@ -183,6 +188,37 @@ python main.py --no-gui      ← csak parancssor, ablak nélkül
 
 ---
 
+## Távoli vezérlés telefonról (Remote)
+
+Egy mobilbarát web-felület, amin **telefonról láthatod az élő naplót** és
+**újraindíthatod** a BetPlacert — bárhonnan, privát Tailscale-alagúton át. Csak
+ennyit tud: **élő log + Újraindítás gomb**, semmi mást.
+
+A futó program automatikusan felhúzza a web-szervert egy háttérszálon — nincs
+külön indítás. Egy **token** védi (csak ezzel lehet csatlakozni); a program első
+indításkor generál egyet, és a `.env`-be írja. A token az indításkor a naplóban is
+megjelenik (helyi cím + token).
+
+### Beüzemelés (egyszer)
+1. Telepítsd a **Tailscale**-t a gépre és a telefonra, és lépj be **ugyanazzal a
+   fiókkal** mindkettőn.
+2. Nézd meg a gép Tailscale-IP-jét (`100.x.y.z`) a Tailscale appban.
+3. A telefon böngészőjében nyisd meg:
+   `http://100.x.y.z:8765/?token=<a-tokened>`
+
+A tokent a program naplójában látod (`Remote elérhető — helyben: …?token=…`), vagy
+a `.env` `RIM_REMOTE_TOKEN=` sorában.
+
+> Helyi teszt a gépen: `http://127.0.0.1:8765/?token=<a-tokened>`
+
+### Finomhangolás (`.env`, opcionális)
+```
+RIM_REMOTE_PORT=8765       ← port (alapértelmezett)
+RIM_REMOTE_ENABLED=false   ← a remote teljes kikapcsolása
+```
+
+---
+
 ## Hogyan működik?
 
 ```
@@ -227,6 +263,9 @@ standalone_betplacer/
 ├── telegram_watcher.py  ← Telegram figyelő
 ├── tip_parser.py        ← üzenet értelmező
 ├── notifier.py          ← értesítő bot (sikertelen fogadás → push)
+├── remote/              ← távoli vezérlő (mobil web: élő log + újraindítás)
+│   ├── server.py        ← FastAPI + uvicorn webszerver (háttérszálon)
+│   └── static/index.html← mobil felület
 ├── bet_engine.py        ← Tippmixpro fogadás (Playwright)
 ├── requirements.txt     ← Python csomagok listája
 ├── install.bat          ← telepítő (egyszer kell futtatni)

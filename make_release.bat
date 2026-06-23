@@ -31,6 +31,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$excludeExt=@('.pyc','.session','.spec');" ^
   "Get-ChildItem -File | Where-Object { $excludeNames -notcontains $_.Name -and $excludeExt -notcontains $_.Extension } | Copy-Item -Destination $st;" ^
   "if(Test-Path 'assets'){Copy-Item -Recurse -Force 'assets' (Join-Path $st 'assets')};" ^
+  "if(Test-Path 'remote'){Copy-Item -Recurse -Force 'remote' (Join-Path $st 'remote'); Get-ChildItem -Path (Join-Path $st 'remote') -Recurse -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force};" ^
   "if(Test-Path 'update.zip'){Remove-Item -Force 'update.zip'};" ^
   "Compress-Archive -Path ($st+'\*') -DestinationPath 'update.zip' -Force;" ^
   "Remove-Item -Recurse -Force $st"

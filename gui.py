@@ -16,15 +16,19 @@ import html
 import os
 import sys
 import threading
+import webbrowser
 from collections import deque
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QIcon, QColor, QTextCursor, QPixmap, QImage, QFont
+from PySide6.QtGui import (
+    QIcon, QColor, QTextCursor, QPixmap, QImage, QFont, QIntValidator,
+)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
     QVBoxLayout, QHBoxLayout, QFrame, QTabWidget, QTextEdit, QPlainTextEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QAbstractItemView,
+    QDialog,
 )
 
 from config import APP_VERSION
@@ -153,6 +157,155 @@ def _make_logo_label(size: int = 28) -> QLabel:
     return lbl
 
 
+# Másodlagos (semleges) gomb a dialógusokhoz — halvány keret.
+BTN_SECONDARY = ("QPushButton{background:transparent;color:#8d8d9f;"
+                 "border:1px solid #3a3a3a;border-radius:6px;padding:6px 14px;}"
+                 "QPushButton:hover{color:#e8e8e8;border:1px solid #8d8d9f;}")
+
+
+class NotifyBotDialog(QDialog):
+    """
+    Értesítő bot beállítása utólag, a programon belül (a wizard 4. lépésének
+    önálló változata). Beírod a @BotFather tokent, Start a botnál, majd
+    „Összekapcsolás" → token-ellenőrzés + chat_id detektálás + teszt-üzenet,
+    végül mentés a .env-be (NOTIFY_BOT_TOKEN / NOTIFY_CHAT_ID / NOTIFY_ON_FAIL).
+
+    persist_env(key, value): a főablak .env-mentő helpere.
+    log(msg, kind):          opcionális naplózó a főablakból.
+    """
+    _invoke = Signal(object)   # háttérszál → fő szál: emit(lambda) → main threaden fut
+
+    def __init__(self, parent=None, persist_env=None, log=None):
+        super().__init__(parent)
+        self._persist_env = persist_env or (lambda k, v: None)
+        self._log = log or (lambda *a, **k: None)
+        self._busy = False
+        self.setWindowTitle("Értesítő bot beállítása")
+        self.setModal(True)
+        self.setFixedWidth(500)
+        _icon = ASSETS / "icon.ico"
+        if _icon.exists():
+            self.setWindowIcon(QIcon(str(_icon)))
+        self._invoke.connect(lambda fn: fn())
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 18, 24, 18)
+        root.setSpacing(10)
+
+        title = QLabel("Értesítő bot (sikertelen fogadás)")
+        title.setStyleSheet(f"color:{C_FG}; font-size:16px; font-weight:600;")
+        root.addWidget(title)
+
+        desc = QLabel(
+            "Ha egy fogadást nem sikerül megrakni, egy Telegram-bot azonnal értesít "
+            "— push-üzenettel a telefonodon.\n\n"
+            "1) Telegramban nyisd meg a @BotFather-t → küldd: /newbot → kövesd a lépéseket\n"
+            "2) Másold be ide a kapott TOKEN-t (pl. 123456:AAH…)\n"
+            "3) Nyisd meg a saját új botodat és nyomj rá a Start-ra\n"
+            "4) Kattints alább az „Összekapcsolás\" gombra")
+        desc.setStyleSheet(f"color:{C_FG}; font-size:12px;")
+        desc.setWordWrap(True)
+        root.addWidget(desc)
+
+        ln = QFrame(); ln.setFrameShape(QFrame.HLine)
+        ln.setStyleSheet("color:#2a2d3a; background:#2a2d3a; max-height:1px;")
+        root.addWidget(ln)
+
+        tok_lbl = QLabel("Bot token")
+        tok_lbl.setStyleSheet(f"color:{C_FG}; font-size:13px;")
+        root.addWidget(tok_lbl)
+        self._token_entry = QLineEdit(os.getenv("NOTIFY_BOT_TOKEN", ""))
+        self._token_entry.setPlaceholderText("A @BotFather-től kapott token")
+        root.addWidget(self._token_entry)
+
+        self._status = QLabel("")
+        self._status.setStyleSheet(f"color:{C_FG}; font-size:12px;")
+        self._status.setWordWrap(True)
+        root.addWidget(self._status)
+
+        if os.getenv("NOTIFY_CHAT_ID", "").strip():
+            self._set_status("Jelenleg már be van állítva egy értesítő bot. "
+                             "Új token összekapcsolásával felülírható.", C_MUTED)
+
+        root.addStretch(1)
+        row = QHBoxLayout()
+        self._close_btn = QPushButton("Bezárás")
+        self._close_btn.setStyleSheet(BTN_SECONDARY)
+        self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_btn.clicked.connect(self.reject)
+        row.addWidget(self._close_btn)
+        row.addStretch(1)
+        self._connect_btn = QPushButton("Összekapcsolás")
+        self._connect_btn.setStyleSheet(BTN_OUTLINE)
+        self._connect_btn.setCursor(Qt.PointingHandCursor)
+        self._connect_btn.clicked.connect(self._connect)
+        row.addWidget(self._connect_btn)
+        root.addLayout(row)
+
+    def _set_status(self, text: str, color=C_FG):
+        self._status.setText(text)
+        self._status.setStyleSheet(f"color:{color}; font-size:12px;")
+
+    def _connect(self):
+        if self._busy:
+            return
+        token = self._token_entry.text().strip()
+        if not token:
+            QMessageBox.critical(self, "Hiba", "Add meg a bot tokent.")
+            return
+        self._busy = True
+        self._connect_btn.setEnabled(False)
+        self._set_status("Bot ellenőrzése és Start keresése…", C_ACCENT)
+
+        def _work():
+            import notifier
+            me = notifier.get_me(token)
+            if not me["ok"]:
+                self._invoke.emit(lambda: self._fail(
+                    f"Érvénytelen token: {me['error']}"))
+                return
+            chat_id = notifier.detect_chat_id(token)
+            if chat_id is None:
+                self._invoke.emit(lambda: self._fail(
+                    f"@{me['username']} rendben — most nyisd meg a botot, nyomj "
+                    "Start-ot, majd kattints újra az Összekapcsolásra."))
+                return
+            sent = notifier.send_message(
+                token, chat_id,
+                "✅ BetPlacer összekapcsolva — az értesítések működnek.\n"
+                "Ide fog érkezni a riasztás, ha egy fogadást nem sikerül megrakni.")
+            self._invoke.emit(lambda: self._success(token, str(chat_id), sent))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _fail(self, msg: str):
+        self._busy = False
+        self._connect_btn.setEnabled(True)
+        self._set_status(msg, C_RED)
+
+    def _success(self, token: str, chat_id: str, sent: bool):
+        self._busy = False
+        os.environ["NOTIFY_BOT_TOKEN"] = token
+        os.environ["NOTIFY_CHAT_ID"]   = chat_id
+        os.environ["NOTIFY_ON_FAIL"]   = "1"
+        self._persist_env("NOTIFY_BOT_TOKEN", token)
+        self._persist_env("NOTIFY_CHAT_ID", chat_id)
+        self._persist_env("NOTIFY_ON_FAIL", "1")
+        self._log("Értesítő bot beállítva.", "ok")
+        if sent:
+            QMessageBox.information(
+                self, "Kész!",
+                "Az értesítő bot összekapcsolva.\n\nKüldtünk egy teszt-üzenetet — "
+                "nézd meg a Telegramod. Ha a program épp fut, a beállítás a "
+                "következő indításkor lép érvénybe.")
+        else:
+            QMessageBox.warning(
+                self, "Mentve",
+                "A token elmentve, de a teszt-üzenetet nem sikerült elküldeni. "
+                "Ellenőrizd az internetkapcsolatot és hogy nyomtál-e Start-ot a botnál.")
+        self.accept()
+
+
 class BetPlacerWindow(QMainWindow):
     # ── Háttérszálból a fő szálra: minden UI-frissítés ezeken át ────────────────
     sigLog     = Signal(str, str)          # msg, kind
@@ -189,10 +342,13 @@ class BetPlacerWindow(QMainWindow):
         self.sigRunning.connect(self._apply_running)
         self.sigUpdate.connect(self._apply_update_button)
 
+        self.remote_server = None
+
         self._build_ui()
         self._install_stdout_redirect()
         self._log("BetPlacer kész. Kattints az Indítás gombra.", "muted")
         QTimer.singleShot(4000, lambda: self._check_updates(silent=True))
+        self._start_remote_server()
 
     # ══════════════════════════════════════════════════════════════════════════
     # UI felépítés
@@ -213,6 +369,14 @@ class BetPlacerWindow(QMainWindow):
         title.setStyleSheet("color:#ffffff; font-size:18px; font-weight:600;")
         hdr.addWidget(title)
         hdr.addStretch(1)
+
+        self._notify_btn = QPushButton("Értesítő bot")
+        self._notify_btn.setStyleSheet(BTN_OUTLINE)
+        self._notify_btn.setCursor(Qt.PointingHandCursor)
+        self._notify_btn.setToolTip(
+            "Telegram értesítő bot beállítása (push riasztás sikertelen fogadásnál).")
+        self._notify_btn.clicked.connect(self._open_notify_setup)
+        hdr.addWidget(self._notify_btn)
 
         self._update_btn = QPushButton("Frissítés keresése")
         self._update_btn.setStyleSheet(BTN_OUTLINE)
@@ -339,9 +503,11 @@ class BetPlacerWindow(QMainWindow):
         self._stake_table = QTableWidget(0, 2)
         self._stake_table.setHorizontalHeaderLabels(["Stratégia", "Tét (Ft)"])
         self._stake_table.verticalHeader().setVisible(False)
+        self._stake_table.setSelectionMode(QAbstractItemView.NoSelection)
         sh = self._stake_table.horizontalHeader()
         sh.setSectionResizeMode(0, QHeaderView.Stretch)
-        sh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        sh.setSectionResizeMode(1, QHeaderView.Fixed)
+        self._stake_table.setColumnWidth(1, 130)
         lay.addWidget(self._stake_table)
 
         row = QHBoxLayout()
@@ -369,20 +535,34 @@ class BetPlacerWindow(QMainWindow):
     def _add_stake_row(self, name: str, stake: str, placeholder: str = ""):
         r = self._stake_table.rowCount()
         self._stake_table.insertRow(r)
+        # A stratégia neve fix (kulcs a párosításhoz) — ne lehessen véletlenül átírni.
         name_item = QTableWidgetItem(name)
+        name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
         self._stake_table.setItem(r, 0, name_item)
-        stake_item = QTableWidgetItem(stake)
-        if not stake and placeholder:
-            stake_item.setToolTip(f"Üres = alap tét ({placeholder} Ft)")
-        self._stake_table.setItem(r, 1, stake_item)
+
+        # A tét: MINDIG látható beviteli mező (nem rejtett, dupla-kattintós cella),
+        # hogy egyértelmű legyen, hova kell írni. Csak pozitív egész fogadható el.
+        editor = QLineEdit(stake)
+        editor.setValidator(QIntValidator(1, 100_000_000, editor))
+        editor.setAlignment(Qt.AlignRight)
+        if placeholder:
+            editor.setPlaceholderText(f"alap ({placeholder})")
+            editor.setToolTip(f"Üresen hagyva az alap tétet kapja ({placeholder} Ft).")
+        editor.setStyleSheet(
+            "QLineEdit{background:#000000;color:#e8e8e8;border:1px solid #3a3a3a;"
+            "border-radius:6px;padding:4px 8px;}"
+            "QLineEdit:focus{border:1px solid #FDB900;}"
+            "QLineEdit:disabled{color:#6b6b6b;border:1px solid #2a2a2a;}")
+        self._stake_table.setCellWidget(r, 1, editor)
+        self._stake_table.setRowHeight(r, 42)
 
     def _collect_stake_table(self) -> dict:
         out = {}
         for r in range(self._stake_table.rowCount()):
             n_item = self._stake_table.item(r, 0)
-            s_item = self._stake_table.item(r, 1)
+            editor = self._stake_table.cellWidget(r, 1)
             name = (n_item.text().strip() if n_item else "")
-            sval = (s_item.text().strip() if s_item else "")
+            sval = (editor.text().strip() if editor is not None else "")
             if not name or not sval:
                 continue
             try:
@@ -427,6 +607,8 @@ class BetPlacerWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _append_log(self, msg: str, kind: str):
+        if self.remote_server is not None:
+            self.remote_server.push_log(msg, kind)
         color = TAG_COLORS.get(kind, C_FG)
         ts = datetime.now().strftime("%H:%M:%S")
         body = html.escape(msg).replace("\n", "<br>&nbsp;&nbsp;")
@@ -472,6 +654,8 @@ class BetPlacerWindow(QMainWindow):
         self._tree.scrollToBottom()
 
     def _apply_running(self, running: bool):
+        if self.remote_server is not None:
+            self.remote_server.set_running(running)
         if running:
             self._status_lbl.setText("● FIGYELÉS AKTÍV")
             self._status_lbl.setStyleSheet(f"color:{C_GREEN}; font-weight:600;")
@@ -599,6 +783,70 @@ class BetPlacerWindow(QMainWindow):
         )
 
     # ══════════════════════════════════════════════════════════════════════════
+    # Remote (mobil web-vezérlő) — élő napló + Újraindítás telefonról
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _start_remote_server(self):
+        """A Remote webszerver indítása háttérszálon (ha engedélyezett).
+
+        Token nélkül / kikapcsolva nem indul. Bármilyen hiba esetén csak naplózunk —
+        a remote opcionális ráadás, nem törheti meg a fő (asztali) működést.
+        """
+        try:
+            import config
+            if config.remote_off():
+                self._log("Remote kikapcsolva (RIM_REMOTE_ENABLED=false).", "muted")
+                return
+            token = config.ensure_remote_token()
+            if not token:
+                self._log("Remote kikapcsolva (nincs token).", "muted")
+                return
+
+            from remote.server import RemoteServer, run_server
+            # A RemoteServer a GUI-szálon él, self-hez kötve (a teljes futás alatt él).
+            self.remote_server = RemoteServer(self)
+            self.remote_server.set_running(self._running)
+            # A telefonról jövő „Újraindítás" a GUI-szálon fut (queued connection,
+            # mert a jel az uvicorn asyncio-száláról érkezik).
+            self.remote_server.restart_requested.connect(self._remote_restart)
+
+            host, port = config.RIM_REMOTE_HOST, config.RIM_REMOTE_PORT
+
+            def _serve():
+                try:
+                    run_server(host, port, self.remote_server, token)
+                except (OSError, SystemExit) as e:
+                    self._log(f"Remote: a webszerver nem indult el "
+                              f"(port {port} foglalt?): {e}", "warn")
+                except Exception as e:
+                    self._log(f"Remote: a webszerver leállt: {e}", "warn")
+
+            threading.Thread(target=_serve, daemon=True, name="remote-server").start()
+            print(f"[Remote] Webszerver: http://{host}:{port}/?token={token}")
+            self._log(f"Remote elérhető — helyben: "
+                      f"http://127.0.0.1:{port}/?token={token}", "muted")
+            self._log("Telefonról: a Tailscale-cím (100.x.y.z) ugyanezzel a "
+                      "?token=... végződéssel.", "muted")
+        except Exception as e:
+            self.remote_server = None
+            self._log(f"Remote nem indult el: {e}", "warn")
+
+    def _remote_restart(self):
+        """Telefonról kért újraindítás (GUI-szál): leállít, megvárja a leállást, indít."""
+        self._log("Újraindítás kérve telefonról…", "warn")
+        if self._running:
+            self._stop()
+        self._wait_then_start()
+
+    def _wait_then_start(self, attempt: int = 0):
+        """Megvárja, míg a futó session háttérszála ténylegesen leáll, majd indít."""
+        if self._thread is not None and self._thread.is_alive() and attempt < 60:
+            QTimer.singleShot(500, lambda: self._wait_then_start(attempt + 1))
+            return
+        if not self._running:
+            self._start()
+
+    # ══════════════════════════════════════════════════════════════════════════
     # Frissítés (GitHub Release alapú önfrissítő)
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -615,6 +863,10 @@ class BetPlacerWindow(QMainWindow):
         text, st, fg = cfg.get(state, ("Frissítés keresése", "normal", C_MUTED))
         self._update_btn.setText(text)
         self._update_btn.setEnabled(st == "normal")
+
+    def _open_notify_setup(self):
+        dlg = NotifyBotDialog(self, persist_env=self._persist_env, log=self._log)
+        dlg.exec()
 
     def _on_update_click(self):
         if self._update_state == "available" and self._update_info:
@@ -654,11 +906,16 @@ class BetPlacerWindow(QMainWindow):
                         self._log("A program naprakész.", "muted")
                 else:
                     self.sigUpdate.emit("idle", None)
+                    try:
+                        import updater
+                        reason = updater.last_error() or "Ismeretlen hiba."
+                    except Exception:
+                        reason = "Ismeretlen hiba."
+                    self._log(f"Frissítés-ellenőrzés sikertelen: {reason}", "error")
                     if not silent:
-                        QMessageBox.warning(
-                            self, "Frissítés",
-                            "Nem sikerült ellenőrizni a frissítést.\n"
-                            "Ellenőrizd az internetkapcsolatot, és próbáld újra.")
+                        self._offer_browser_download(
+                            "Nem sikerült automatikusan ellenőrizni a frissítést.\n\n"
+                            f"{reason}")
             QTimer.singleShot(0, _done)
 
         threading.Thread(target=_work, daemon=True).start()
@@ -707,8 +964,36 @@ class BetPlacerWindow(QMainWindow):
 
     def _update_failed(self, reason: str):
         self._log(f"Frissítés sikertelen: {reason}", "error")
-        QMessageBox.critical(self, "Frissítés", reason)
+        self._offer_browser_download(
+            f"A frissítés nem sikerült.\n\n{reason}")
         self.sigUpdate.emit("available", self._update_info)
+
+    def _offer_browser_download(self, message: str):
+        """
+        Hiba esetén felajánlja a böngészős letöltést: a GitHub kiadás-oldalát
+        nyitja meg (ez a böngészőben akkor is működik, ha a Python — vírusirtó
+        vagy proxy miatt — nem éri el az API-t). A felhasználó onnan letölti az
+        update.zip-et, és kézzel telepíti (kicsomagolás a program mappájába).
+        """
+        try:
+            import updater
+            url = updater.RELEASE_PAGE_URL
+        except Exception:
+            url = ("https://github.com/Jhanee01/betplacer-standalone/"
+                   "releases/latest")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Frissítés")
+        box.setText(message + "\n\nMegnyitod a letöltést böngészőben?")
+        yes = box.addButton("Letöltés böngészőből", QMessageBox.AcceptRole)
+        box.addButton("Mégse", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is yes:
+            try:
+                webbrowser.open(url)
+                self._log("Letöltési oldal megnyitva a böngészőben.", "tip")
+            except Exception:
+                self._log(f"Nyisd meg kézzel: {url}", "muted")
 
     def _quit_for_update(self):
         self._log("Bezárás a frissítéshez — a program mindjárt újraindul.", "muted")
