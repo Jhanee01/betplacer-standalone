@@ -48,7 +48,7 @@ if not exist "%TMPDIR%" (
 
 rem -- 3) Uj kod rairasa (titkok / session / logok kihagyva) -------------------
 echo  Uj verzio telepitese...
-robocopy "%TMPDIR%" "%APP%." /E /XF .env *.session strategy_stakes.json /XD logs __pycache__ _update_tmp >NUL
+robocopy "%TMPDIR%" "%APP%." /E /XF .env *.session strategy_stakes.json hidden_strategies.json /XD logs __pycache__ _update_tmp >NUL
 
 rem -- 3b) Uj fuggosegek telepitese -------------------------------------------
 rem  Ha a frissites uj csomagot hozott (pl. PySide6), enelkul a program el sem

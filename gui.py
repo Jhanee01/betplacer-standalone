@@ -550,8 +550,10 @@ class BetPlacerWindow(QMainWindow):
     def _load_stake_table(self):
         """Mentett + ismert stratégiák betöltése a táblázatba."""
         saved = stake_store.load_stakes()
+        hidden = stake_store.load_hidden()
         default = os.getenv("BET_STAKE", "500")
-        names = list(dict.fromkeys(list(saved.keys()) + stake_store.KNOWN_STRATEGIES))
+        names = [n for n in dict.fromkeys(list(saved.keys()) + stake_store.KNOWN_STRATEGIES)
+                 if n not in hidden]
         self._stake_table.setRowCount(0)
         for name in names:
             self._add_stake_row(name, str(saved.get(name, "")), placeholder=default)
@@ -591,31 +593,35 @@ class BetPlacerWindow(QMainWindow):
             "QLineEdit:disabled{color:#6b6b6b;border:1px solid #2a2a2a;}")
         self._stake_table.setCellWidget(r, 1, editor)
 
-        # Törlés gomb — csak EGYEDI (nem beépített) stratégiákra. A beépítettek
-        # úgyis visszatérnének, így azokat nincs értelme törölni.
-        deletable = name_editable or (name and name not in stake_store.KNOWN_STRATEGIES)
-        if deletable:
-            del_btn = QPushButton("✕")
-            del_btn.setToolTip("Stratégia törlése")
-            del_btn.setCursor(Qt.PointingHandCursor)
-            del_btn.setStyleSheet(
-                "QPushButton{background:transparent;color:#8d8d9f;border:none;"
-                "font-size:14px;}"
-                "QPushButton:hover{color:#d44a3a;}")
-            del_btn.clicked.connect(self._delete_stake_row)
-            self._stake_table.setCellWidget(r, 2, del_btn)
+        # Törlés gomb MINDEN sorhoz. Beépített stratégiát is lehet törölni — a
+        # _delete_stake_row elrejti, így nem tér vissza újratöltéskor.
+        del_btn = QPushButton("✕")
+        del_btn.setToolTip("Stratégia törlése")
+        del_btn.setCursor(Qt.PointingHandCursor)
+        del_btn.setStyleSheet(
+            "QPushButton{background:transparent;color:#8d8d9f;border:none;"
+            "font-size:14px;}"
+            "QPushButton:hover{color:#d44a3a;}")
+        del_btn.clicked.connect(self._delete_stake_row)
+        self._stake_table.setCellWidget(r, 2, del_btn)
 
         self._stake_table.setRowHeight(r, 42)
         return r
 
     def _delete_stake_row(self):
-        """A ✕-re kattintott sor törlése (a gombról visszafejtve az aktuális sort)."""
+        """A ✕-re kattintott sor törlése — azonnal perzisztálva (a beépített
+        stratégiát elrejti, hogy ne térjen vissza)."""
         btn = self.sender()
         for r in range(self._stake_table.rowCount()):
             if self._stake_table.cellWidget(r, 2) is btn:
+                name = self._strategy_name_at(r)
                 self._stake_table.removeRow(r)
-                break
-        self._set_stake_status("Törölve — ne felejtsd el a Mentést.", "#f2cc0c")
+                if name:
+                    stake_store.delete_strategy(name)
+                    self._set_stake_status(f"Törölve: {name}", "#f2cc0c")
+                else:
+                    self._set_stake_status("Sor törölve.", C_MUTED)
+                return
 
     def _on_add_strategy(self):
         """„+ Stratégia": új sor BEÍRHATÓ névmezővel, fókusszal a névre."""

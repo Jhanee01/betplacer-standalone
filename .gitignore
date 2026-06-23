@@ -5,6 +5,7 @@
 
 # Felhasználói beállítás (gépenként eltér, frissítéskor ne íródjon felül)
 strategy_stakes.json
+hidden_strategies.json
 
 # Futás közbeni / generált
 logs/
