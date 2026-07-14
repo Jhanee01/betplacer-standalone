@@ -414,9 +414,11 @@ def click_odds_by_teams(page, frame, tip: ParsedTip):
       1X2  — a gomb OddsButton__ShortText felirata szerint (hazai/döntetlen/vendég)
 
     Visszatérési értékek:
-      True  — sikeres kattintás
-      False — esemény megvan, de gomb nem (nem retryolható)
-      None  — esemény nincs az oldalon (retryolható)
+      True            — sikeres kattintás
+      False           — esemény megvan, de gomb nem (nem retryolható)
+      None            — esemény nincs az oldalon (retryolható)
+      "line_changed"  — OU: az esemény megvan, de a tipp gólvonala már NEM
+                        szerepel a kínálatban (pl. 8.5 → 5.5) → NEM fogadunk
     """
     # Elsődleges: event_id alapú keresés (eredeti, bevált kód)
     if tip.event_id:
@@ -445,9 +447,12 @@ def click_odds_by_teams(page, frame, tip: ParsedTip):
         line = str(tip.line)
         # 1. kísérlet: OddsParameter span alapján
         params = ev.locator("span[class*='OddsParameter']")
+        found_lines = []
         for i in range(params.count()):
             try:
                 txt = params.nth(i).inner_text(timeout=800).strip().replace(",", ".")
+                if txt:
+                    found_lines.append(txt)
                 if txt != line:
                     continue
                 block = params.nth(i).locator("xpath=ancestor::div[1]").first
@@ -461,9 +466,20 @@ def click_odds_by_teams(page, frame, tip: ParsedTip):
             except Exception:
                 pass
 
-        # 2. kísérlet: button inner_text alapján
+        # VONAL-VÉDELEM: az eseményen VANNAK gólvonalak, de a tippé nincs
+        # köztük → a vonal a tipp kiadása óta megváltozott (pl. 8.5 → 5.5).
+        # Más vonalra rakni más fogadás lenne → NEM fogadunk.
+        if found_lines:
+            log(f"  gólvonal megváltozott: tipp {line}, kínálatban: "
+                f"{', '.join(found_lines)} — NEM rakjuk meg")
+            screenshot(page, f"vonal_valtozott_{line}_{pick}")
+            return "line_changed"
+
+        # 2. kísérlet: button inner_text alapján — CSAK ha a gomb szövegében a
+        # tipp gólvonala is szerepel (vonal-egyezés nélkül rossz vonalra rakna).
         log("  OddsParameter fallback, inner_text keresés...")
         btns = ev.locator("button[class*='OddsButton']")
+        pick_seen_other_line = False
         for i in range(btns.count()):
             try:
                 raw  = btns.nth(i).inner_text(timeout=800)
@@ -472,12 +488,22 @@ def click_odds_by_teams(page, frame, tip: ParsedTip):
                     (pick == "OVER"  and ("tobb" in norm or "over" in norm or ("mint" in norm and "kevesebb" not in norm))) or
                     (pick == "UNDER" and ("kevesebb" in norm or "under" in norm or "kevés" in raw.casefold()))
                 )
-                if hit:
-                    log(f"  O/U {pick} (inner_text) → kattintás")
-                    human_click(page, btns.nth(i))
-                    return True
+                if not hit:
+                    continue
+                if line not in raw.replace(",", "."):
+                    pick_seen_other_line = True
+                    continue
+                log(f"  O/U {line} {pick} (inner_text) → kattintás")
+                human_click(page, btns.nth(i))
+                return True
             except Exception:
                 pass
+
+        if pick_seen_other_line:
+            log(f"  {pick} gomb van, de nem a(z) {line} vonallal — "
+                f"vonal megváltozott, NEM rakjuk meg")
+            screenshot(page, f"vonal_valtozott_{line}_{pick}")
+            return "line_changed"
 
     elif market == "1X2":
         # A kimenetel-gombok felirata (ShortText) alapján: Hazai/Döntetlen/Vendég.
@@ -613,10 +639,12 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
     Egy tipp megrakásának EGY teljes próbálkozása.
 
     Visszatérési érték (string):
-      "ok"       — sikeres fogadás
-      "fail"     — esemény megvan, de a fogadás nem ment (NE retry-old)
-      "notfound" — az esemény nincs (még) az oldalon → a hívó async réteg
-                   dönt a várakozásról/újrapróbálásról, ez NEM blokkol más tippet.
+      "ok"           — sikeres fogadás
+      "fail"         — esemény megvan, de a fogadás nem ment (NE retry-old)
+      "notfound"     — az esemény nincs (még) az oldalon → a hívó async réteg
+                       dönt a várakozásról/újrapróbálásról, ez NEM blokkol más tippet.
+      "line_changed" — a tipp gólvonala már nem elérhető (a vonal elmozdult) →
+                       a tippet KIHAGYJUK, nem retry-oljuk.
 
     A session-kiesés / szelvény-hiba miatti gyors újrapróbálás itt belül marad
     (másodperces nagyságrend), de az 5 perces esemény-várakozás már a hívóé.
@@ -659,6 +687,10 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
             # Esemény nincs az oldalon — a hívó vár és újrapróbálja (csak ezt a tippet).
             log("  esemény nincs az oldalon (notfound)")
             return "notfound"
+
+        if clicked == "line_changed":
+            # A gólvonal elmozdult a tipp kiadása óta — SZÁNDÉKOSAN kihagyjuk.
+            return "line_changed"
 
         if not clicked:
             return "fail"
@@ -727,7 +759,7 @@ class BetEngine:
         self._browser = None
 
     def place(self, tip: ParsedTip, stake: int = None) -> str:
-        """Visszatérés: 'ok' | 'fail' | 'notfound'.
+        """Visszatérés: 'ok' | 'fail' | 'notfound' | 'line_changed'.
 
         `stake`: ha meg van adva, ezzel a téttel rak (stratégiánkénti tét);
         egyébként az induláskori alap tét (self._stake)."""

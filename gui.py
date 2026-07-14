@@ -76,6 +76,7 @@ STATUS_LABELS = {
     "retry":   ("● esemény vár", C_ACCENT),
     "ok":      ("✓ OK",          C_GREEN),
     "fail":    ("✗ sikertelen",  C_RED),
+    "skipped": ("✗ kihagyva",    C_ACCENT),
 }
 
 
@@ -769,6 +770,8 @@ class BetPlacerWindow(QMainWindow):
             label = f"● esemény vár {detail}"
         elif status == "fail" and detail:
             label = f"✗ sikertelen ({detail})"
+        elif status == "skipped" and detail:
+            label = f"✗ kihagyva ({detail})"
         meccs = f"{tip.home_clean}–{tip.away_clean}"
         values = [tip.time, meccs, tip.pick_str, label]
         colors = [None, None, None, color]

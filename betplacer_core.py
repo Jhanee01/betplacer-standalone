@@ -108,7 +108,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
     stop_event: threading.Event                          — opcionális leállítás
     on_status:  callable(key: str, tip, status: str, detail: str) — opcionális
                 tipp-állapot jelzés a GUI „Mai tippek" paneljéhez.
-                status: "pending" | "placing" | "retry" | "ok" | "fail"
+                status: "pending" | "placing" | "retry" | "ok" | "fail" | "skipped"
     """
     from bet_engine import BetEngine
     from telegram_watcher import start_watcher
@@ -172,6 +172,14 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         if reason:
             msg += f"\nOk: {reason}"
         await _send_notify(msg)
+
+    async def _notify_line_changed(tip):
+        if not (notify_on_fail and notify_bot_ready):
+            return
+        await _send_notify(
+            "⚠️ Vonal megváltozott — a tipp NEM lett megrakva\n"
+            f"{_fmt_tip_line(tip)}\n"
+            f"A(z) {tip.line} gólvonal már nem szerepel a kínálatban.")
 
     # Gép ébren tartása a teljes figyelési munkamenet alatt.
     if _prevent_sleep():
@@ -249,6 +257,15 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 _foot("Fogadás sikertelen")
                 _status(key, tip, "fail")
                 await _notify_fail(tip)
+                return
+
+            if result == "line_changed":
+                # A gólvonal elmozdult a tipp kiadása óta (pl. 8.5 → 5.5) —
+                # más vonalra rakni más fogadás lenne, ezért KIHAGYJUK.
+                log(f"[BET_SKIP] gólvonal megváltozott — kihagyva: {tip}", "warn")
+                _foot("Vonal változott — kihagyva")
+                _status(key, tip, "skipped", "vonal változott")
+                await _notify_line_changed(tip)
                 return
 
             # result == "notfound" — az esemény nincs (még) az oldalon.
