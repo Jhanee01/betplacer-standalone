@@ -23,6 +23,7 @@ KNOWN_STRATEGIES = [
     "Team Running 8min",          "Team Running 12min",
     "Döntetlen 8min",            "Döntetlen 12min",
     "Team Running Handicap 8min", "Team Running Handicap 12min",
+    "Player Running 8min",
     "CLA",
 ]
 
