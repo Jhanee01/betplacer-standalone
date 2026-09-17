@@ -28,6 +28,46 @@ LOGS_DIR = APP_DIR / "logs"
 # 60 mp-re emelve, hogy gyenge kapcsolaton is beférjen.
 PAGE_GOTO_TIMEOUT = 60000
 
+# Tétlen ("parkoló") oldal. Két fogadás között a böngésző NEM maradhat a
+# tippmixpro listaoldalon: az élő oldal websocketen folyamatosan tolja az
+# oddsfrissítéseket, amiket a renderer órákon át a memóriában gyűjt (a több
+# száz soros meccslista DOM-ja is bent marad). about:blank-re állva a teljes
+# DOM és a JS heap felszabadul. A bejelentkezés NEM esik ki: a session a
+# böngésző-kontextus cookie-jaiban él, nem az oldalban.
+IDLE_URL = "about:blank"
+
+# Ennyi fogadás után friss lapot nyitunk a régi helyett. A parkolás a heap
+# nagy részét visszaadja, de a renderer hosszú (többnapos) futás alatt így is
+# hízik — egy új lap teljesen tiszta lappal indul.
+BETS_PER_PAGE_RECYCLE = 25
+
+# A méret-beállítás layout-kritikus: a tippmixpro szűk ablaknál más (mobil)
+# elrendezést ad, amitől az odds- és szelvény-szelektorok eltűnhetnek. Ezért
+# marad a széles asztali nézet.
+VIEWPORT = {"width": 1800, "height": 1000}
+
+# Chromium indítási kapcsolók. A Playwright alapból már sokat átad
+# (--disable-extensions, --disable-background-networking, --disable-dev-shm-usage,
+# --disable-features=... stb.), ezért CSAK azt tesszük hozzá, ami nincs benne:
+#   --disable-gpu / --disable-software-rasterizer: a headless shell úgyis
+#       szoftveresen rajzol, a külön GPU-folyamat felesleges (~50-80 MB).
+#   --js-flags=--max-old-space-size=512: kemény plafon a V8 heapre, hogy a
+#       renderer ne tudjon korlátlanul nőni. 512 MB bőven elég a listaoldalnak
+#       (ennél szűkebb korlát OOM-mal megölhetné a lapot fogadás közben).
+_LAUNCH_ARGS = [
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--js-flags=--max-old-space-size=512",
+]
+
+
+def _park(page):
+    """Üres lapra állítja a böngészőt, hogy tétlenül ne egye a memóriát."""
+    try:
+        page.goto(IDLE_URL, wait_until="domcontentloaded", timeout=15000)
+    except Exception as e:
+        log(f"  parkolás nem sikerült (folytatjuk): {e}")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Erőforrásszűrő — kevesebb adat, gyorsabb betöltés
@@ -836,14 +876,21 @@ class BetEngine:
         self._dry_run  = dry_run
         self._pw       = None
         self._browser  = None
+        self._context  = None
         self._page     = None
+        self._placed   = 0    # eddigi megrakás-kísérletek (lap-újrahasznosításhoz)
 
     def start(self):
         self._pw      = sync_playwright().__enter__()
-        self._browser = self._pw.chromium.launch(headless=True)
-        self._page    = self._browser.new_page(viewport={"width": 1800, "height": 1000})
+        self._browser = self._pw.chromium.launch(headless=True, args=_LAUNCH_ARGS)
+        # Explicit kontextus (a new_page() magától is csinálna egyet): így a
+        # lapot le tudjuk cserélni úgy, hogy a cookie-k — és velük a belépett
+        # session — megmaradnak.
+        self._context = self._browser.new_context(viewport=VIEWPORT)
+        self._page    = self._context.new_page()
         _install_resource_blocker(self._page)
         ensure_logged_in(self._page, self._username, self._password)
+        _park(self._page)   # az első tippig ne tartsunk nyitva élő oldalt
         log("BetEngine kész.")
 
     def stop(self):
@@ -858,7 +905,40 @@ class BetEngine:
         except Exception:
             pass
         self._page    = None
+        self._context = None
         self._browser = None
+
+    def _recycle_page(self):
+        """Friss lapot nyit a régi helyett (a régi már parkolva van).
+
+        Előbb felépítjük és ellenőrizzük az újat, és CSAK sikeres belépés után
+        zárjuk a régit — így egy hibás csere sem hagyhat minket lap nélkül."""
+        log(f"Lap újrahasznosítása ({self._placed} fogadás után)...")
+        old = self._page
+        new = None
+        try:
+            new = self._context.new_page()
+            _install_resource_blocker(new)
+            new.goto(TIPPMIXPRO_URL, wait_until="domcontentloaded",
+                     timeout=PAGE_GOTO_TIMEOUT)
+            new.wait_for_timeout(1500)
+            if not is_logged_in(new):
+                # A cookie-k elvileg átjönnek; ha mégsem, itt lépünk be újra.
+                ensure_logged_in(new, self._username, self._password)
+            _park(new)
+            self._page = new
+            try:
+                old.close()
+            except Exception:
+                pass
+            log("  új lap kész.")
+        except Exception as e:
+            log(f"  lap-újrahasznosítás sikertelen ({e}) — maradunk a régi lapon")
+            if new is not None:
+                try:
+                    new.close()
+                except Exception:
+                    pass
 
     def place(self, tip: ParsedTip, stake: int = None) -> str:
         """Visszatérés: 'ok' | 'fail' | 'notfound' | 'line_changed'.
@@ -881,3 +961,10 @@ class BetEngine:
             except Exception:
                 pass
             return "fail"
+        finally:
+            # A következő tippig (ami órák múlva jöhet) ne maradjon nyitva az
+            # élő listaoldal — parkolunk, néha pedig friss lapot nyitunk.
+            self._placed += 1
+            _park(self._page)
+            if self._placed % BETS_PER_PAGE_RECYCLE == 0:
+                self._recycle_page()
