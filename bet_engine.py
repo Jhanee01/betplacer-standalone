@@ -560,6 +560,82 @@ def wait_for_betslip(page, frame=None, timeout_s: int = 12):
     return None
 
 
+# A szelvény a FIÓKHOZ mentődik: egy félbemaradt próbálkozás tétele ott marad,
+# a meccs kezdete után "Ez a kimenetel már nem fogadható" lesz, és minden
+# következő tipp mellé kerül (Kötés fül + "Változások elfogadása" gomb) →
+# a rakó beragad. Ezért kattintás előtt mindig ürítjük a szelvényt.
+_SLIP_ITEM_SEL = "div[class*='BetslipSelection--']"
+_SLIP_DEAD_TEXT = "text=/nem fogadhat/i"
+_SLIP_CLEAR_ALL_SELS = [
+    "[class*='RemoveAll' i]", "[class*='DeleteAll' i]",
+    "[class*='ClearAll' i]", "[class*='Trash' i]",
+]
+_SLIP_REMOVE_SELS = [
+    "[class*='Remove' i]", "[class*='Delete' i]", "[class*='Close' i]",
+]
+
+
+def _slip_item_count(contexts) -> int:
+    n = 0
+    for ctx in contexts:
+        try:
+            n += max(ctx.locator(_SLIP_ITEM_SEL).count(),
+                     ctx.locator(_SLIP_DEAD_TEXT).count())
+        except Exception:
+            pass
+    return n
+
+
+def _click_first_visible(ctx, selectors, within=None) -> bool:
+    root = within if within is not None else ctx
+    for sel in selectors:
+        try:
+            loc = root.locator(sel)
+            for i in range(min(loc.count(), 5)):
+                el = loc.nth(i)
+                if el.is_visible():
+                    el.click(timeout=2000)
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def clear_betslip(page, frame) -> bool:
+    """Kiüríti a szelvényt. True, ha üres (vagy nem látunk rajta semmit)."""
+    contexts = [c for c in [frame, page] if c is not None]
+    before = _slip_item_count(contexts)
+    if before == 0:
+        return True
+    log(f"  szelvényen {before} régi tétel — ürítés")
+    screenshot(page, "szelveny_urites_elott")
+    for _ in range(12):
+        count = _slip_item_count(contexts)
+        if count == 0:
+            log("  szelvény kiürítve")
+            return True
+        clicked = False
+        for ctx in contexts:
+            if _click_first_visible(ctx, _SLIP_CLEAR_ALL_SELS):
+                clicked = True
+                break
+            try:
+                item = ctx.locator(_SLIP_ITEM_SEL).first
+                if item.count() > 0 and _click_first_visible(ctx, _SLIP_REMOVE_SELS, within=item):
+                    clicked = True
+                    break
+            except Exception:
+                pass
+        if not clicked:
+            break
+        page.wait_for_timeout(700)
+    ok = _slip_item_count(contexts) == 0
+    if not ok:
+        log("  a szelvényt NEM sikerült kiüríteni")
+        screenshot(page, "szelveny_nem_urult")
+    return ok
+
+
 def ensure_real_tab(ctx):
     try:
         real = ctx.locator("div.BetslipGroup--Real").first
@@ -604,6 +680,15 @@ def confirm_bet(page, ctx, dry_run: bool) -> bool:
     if fogad.count() == 0:
         screenshot(page, "fogad_gomb_nem_talalt")
         log("  Fogadok gomb nem talalhato!")
+        return False
+    try:
+        btn_txt = fogad.inner_text(timeout=1000).strip()
+    except Exception:
+        btn_txt = ""
+    if "elfogad" in btn_txt.casefold():
+        # "Változások elfogadása" — ez NEM fogadás (odds-/kimenetel-változás).
+        screenshot(page, "valtozasok_elfogadasa")
+        log(f"  a gomb felirata '{btn_txt}' — nem fogadás, nem nyomjuk meg")
         return False
     screenshot(page, "fogadas_elott")
     log("  Fogadok gomb kattintas")
@@ -682,6 +767,11 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
 
         load_all_events(fr)
 
+        # Üres szelvényről indulunk (régi/halott tételek + újrapróbáláskor a
+        # már kijelölt odds sem kapcsolódik ki a második kattintással).
+        if not clear_betslip(page, fr):
+            continue
+
         clicked = click_odds_by_teams(page, fr, tip)
         if clicked is None:
             # Esemény nincs az oldalon — a hívó vár és újrapróbálja (csak ezt a tippet).
@@ -701,6 +791,12 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
             log("  szelveny nem jelent meg — session kiesett, ujra bejelentkezes...")
             screenshot(page, f"session_kiesett_kiserlet{attempt}")
             ensure_logged_in(page, username, password)
+            continue
+
+        n_items = _slip_item_count([fr, page])
+        if n_items > 1:
+            log(f"  a szelvényen {n_items} tétel van (csak 1 lehet) — nem rakjuk, újrapróba")
+            screenshot(page, f"tobb_tetel_kiserlet{attempt}")
             continue
 
         try:
