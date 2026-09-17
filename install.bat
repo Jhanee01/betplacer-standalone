@@ -31,10 +31,21 @@ if %errorlevel% neq 0 (
 )
 
 echo [1/3] Python csomagok telepitese... (1-2 perc)
-pip install -r requirements.txt
+rem "python -m pip": pontosan abba a Pythonba telepit, amivel a program fut
+rem (a sima "pip" tobb Python eseten masik telepitesbe rakhatja a csomagokat).
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 if %errorlevel% neq 0 (
     echo.
     echo HIBA: pip install sikertelen!
+    pause
+    exit /b 1
+)
+python -c "import PySide6, qt_material, telethon, playwright, dotenv, fastapi, uvicorn"
+if %errorlevel% neq 0 (
+    echo.
+    echo HIBA: a csomagok telepitese utan sem importalhatok!
+    for /f "delims=" %%v in ('python -c "import sys; print(sys.executable)"') do echo Python: %%v
     pause
     exit /b 1
 )
