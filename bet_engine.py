@@ -565,6 +565,8 @@ def wait_for_betslip(page, frame=None, timeout_s: int = 12):
 # következő tipp mellé kerül (Kötés fül + "Változások elfogadása" gomb) →
 # a rakó beragad. Ezért kattintás előtt mindig ürítjük a szelvényt.
 _SLIP_ITEM_SEL = "div[class*='BetslipSelection--']"
+# A tételenkénti X súgószövege: "A kiválasztott esemény eltávolítása"
+_SLIP_X_SEL = "[title*='esemény eltávolítása' i]"
 _SLIP_DEAD_TEXT = "text=/nem fogadhat/i"
 _SLIP_CLEAR_ALL_SELS = [
     "[class*='RemoveAll' i]", "[class*='DeleteAll' i]",
@@ -580,6 +582,7 @@ def _slip_item_count(contexts) -> int:
     for ctx in contexts:
         try:
             n += max(ctx.locator(_SLIP_ITEM_SEL).count(),
+                     ctx.locator(_SLIP_X_SEL).count(),
                      ctx.locator(_SLIP_DEAD_TEXT).count())
         except Exception:
             pass
@@ -616,6 +619,9 @@ def clear_betslip(page, frame) -> bool:
             return True
         clicked = False
         for ctx in contexts:
+            if _click_first_visible(ctx, [_SLIP_X_SEL]):
+                clicked = True
+                break
             if _click_first_visible(ctx, _SLIP_CLEAR_ALL_SELS):
                 clicked = True
                 break
