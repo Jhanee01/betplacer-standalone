@@ -1,12 +1,15 @@
 @echo off
-title BetPlacer
-echo ============================================
-echo  BetPlacer Standalone - Indul...
-echo ============================================
-echo.
-python main.py %*
-echo.
-echo ============================================
-echo  A script leállt. Nyomj egy gombot...
-echo ============================================
-pause
+rem ==========================================================================
+rem  BetPlacer inditasa KONZOLABLAK NELKUL (pythonw) - csak a program ablaka
+rem  latszik. Hibakereseshez (a kimenet egy nyitva marado ablakban):
+rem  run_debug.bat
+rem ==========================================================================
+cd /d "%~dp0"
+where pythonw >NUL 2>&1
+if errorlevel 1 (
+    rem Nincs pythonw a PATH-on - a regi, konzolos modon indul.
+    python main.py %*
+    pause
+    exit /b
+)
+start "" pythonw main.py %*

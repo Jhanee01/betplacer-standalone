@@ -28,6 +28,9 @@ Két piac-formátumot ismer:
     Pick:
     • DRAW @ 3.10
 
+A Vegas-tippekben van egy `Bookmaker: Vegas` sor is (a TippmixPro-tippekben nincs)
+→ ParsedTip.bookmaker.
+
 A `Market:` sor opcionális és visszafelé kompatibilis: ha hiányzik, a Pick sor
 formátuma dönt (OVER/UNDER → OU; HOME/DRAW/AWAY → 1X2). Az 1X2 pick a kanonikus
 HOME/DRAW/AWAY tokeneket ÉS a magyar Hazai/Döntetlen/Vendég címkéket is elfogadja.
@@ -36,6 +39,9 @@ HOME/DRAW/AWAY tokeneket ÉS a magyar Hazai/Döntetlen/Vendég címkéket is elf
 import re
 from dataclasses import dataclass
 from typing import Optional
+
+
+BOOKMAKER_LABEL = {"tippmixpro": "TippmixPro", "vegas": "Vegas"}
 
 
 @dataclass
@@ -49,7 +55,10 @@ class ParsedTip:
     odds:       float           # 1.62
     market:     str = "OU"      # "OU" | "1X2"
     line:       Optional[float] = None  # OU gólvonal (pl. 4.5); 1X2-nél None
-    event_id:   str = ""        # Tippmixpro event ID (pl. "303148022322821888")
+    event_id:   str = ""        # Tippmixpro / Vegas event ID (pl. "303148022322821888")
+    bookmaker:  str = "tippmixpro"  # "tippmixpro" | "vegas" — a `Bookmaker:` sorból
+                                    # (hiányában tippmixpro); indításkor a csatorna
+                                    # irodájával vetjük össze
 
     @property
     def home_clean(self) -> str:
@@ -76,6 +85,11 @@ class ParsedTip:
         """A stratégiánkénti tét KULCSA: stratégia-név + meccshossz.
         Pl. 'Team Running' + '8min' → 'Team Running 8min'. CLA-nál csak 'CLA'."""
         return f"{self.strategy} {self.minutes}".strip()
+
+    @property
+    def bookmaker_label(self) -> str:
+        """Az iroda megjelenített neve (napló, értesítés, táblázat)."""
+        return BOOKMAKER_LABEL.get(self.bookmaker, self.bookmaker)
 
     @property
     def pick_str(self) -> str:
@@ -125,6 +139,7 @@ def parse_tip(text: str) -> Optional[ParsedTip]:
     time_m     = re.search(r"Time:\s*(\d{1,2}:\d{2})",  text)
     match_m    = re.search(r"Match:\s*(.+?)\s+vs\s+(.+)",text)
     event_m    = re.search(r"Event ID:\s*(.+)",          text)
+    book_m     = re.search(r"Bookmaker:\s*(.+)",         text)
 
     if not all([league_m, strategy_m, time_m, match_m]):
         return None
@@ -136,6 +151,8 @@ def parse_tip(text: str) -> Optional[ParsedTip]:
         home_team = match_m.group(1).strip(),
         away_team = match_m.group(2).strip(),
         event_id  = event_m.group(1).strip() if event_m else "",
+        bookmaker = ("vegas" if book_m and "vegas" in book_m.group(1).lower()
+                     else "tippmixpro"),
     )
 
     # A pick FORMÁTUMA dönt a piacról (a tokenek nem fednek át), így a `Market:`

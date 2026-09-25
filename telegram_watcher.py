@@ -11,8 +11,9 @@ from pathlib import Path
 
 from telethon import TelegramClient, events
 from telethon.tl.types import PeerChannel
+from telethon.utils import get_peer_id
 
-from tip_parser import parse_tip, ParsedTip
+from tip_parser import parse_tip, ParsedTip, BOOKMAKER_LABEL
 from paths import APP_DIR
 
 SESSION_FILE = str(APP_DIR / "telegram_session")
@@ -31,13 +32,18 @@ async def start_watcher(
     api_id:   int,
     api_hash: str,
     phone:    str,
-    channel,          # str (@name) vagy int (channel ID)
+    channels: dict,   # {csatorna (int ID vagy @név): iroda ("tippmixpro" | "vegas")}
     on_tip,           # callable(tip: ParsedTip) — szinkron, gyorsan visszatér
     strategy_filter: str = "",
     stop_event=None,  # threading.Event — ha beállítják, gracefully lekapcsol
     log=None,         # callable(msg, kind) — színes Napló (opcionális)
 ):
-    """Connect to Telegram and listen for tips in the given channel.
+    """Connect to Telegram and listen for tips in the given channels.
+
+    Minden csatornához egy iroda tartozik. A tipp akkor megy tovább, ha a saját
+    `Bookmaker:` sora (hiányában tippmixpro) EGYEZIK a csatorna irodájával — így
+    pl. egy Vegas-szorzóra szóló tipp sosem kerül a TippmixPro-ra (és fordítva),
+    akkor sem, ha rossz csatornába érkezik.
 
     A handler szinkron `on_tip(tip)`-et hív, ami gyorsan visszatér (taskot indít),
     így egy tipp feldolgozása nem blokkolja a következő üzenetek fogadását.
@@ -69,7 +75,8 @@ async def start_watcher(
         emit("Futtasd újra a beállítási varázslót: python main.py --setup", "muted")
         await client.disconnect()
         return
-    emit(f"Csatlakozva. Figyelt csatorna: {channel}", "ok")
+    emit("Csatlakozva. Figyelt csatorna: " + ", ".join(
+        f"{ch} ({BOOKMAKER_LABEL.get(bm, bm)})" for ch, bm in channels.items()), "ok")
 
     # KRITIKUS: get_dialogs() MINDIG, csatlakozás után.
     # Két dolgot old meg egyszerre:
@@ -88,35 +95,54 @@ async def start_watcher(
     except Exception:
         pass
 
-    # Resolve the channel entity (most már a cache-ből biztosan megvan).
-    try:
-        entity = await client.get_entity(channel)
-    except Exception as e:
-        emit(f"Csatorna nem található: {channel} — {e}", "error")
-        emit("Ellenőrizd, hogy a bejelentkezett Telegram-fiók TAGJA-e a csatornának.", "muted")
+    # Resolve the channel entities (most már a cache-ből biztosan megvan).
+    # Egy hibás csatorna nem állítja le a többit.
+    by_chat: dict = {}     # peer chat_id → iroda
+    entities = []
+    for channel, bookmaker in channels.items():
+        label = BOOKMAKER_LABEL.get(bookmaker, bookmaker)
+        try:
+            entity = await client.get_entity(channel)
+        except Exception as e:
+            emit(f"[{label}] Csatorna nem található: {channel} — {e}", "error")
+            emit("Ellenőrizd, hogy a bejelentkezett Telegram-fiók TAGJA-e a csatornának.",
+                 "muted")
+            continue
+        title = getattr(entity, "title", None) or str(channel)
+        emit(f"[{label}] Csatorna rendben: „{title}\"", "ok")
+        by_chat[get_peer_id(entity)] = bookmaker
+        entities.append(entity)
+    if not entities:
+        emit("Egyik csatorna sem érhető el — a figyelés nem indul.", "error")
+        await client.disconnect()
         return
-
-    title = getattr(entity, "title", None) or str(channel)
-    emit(f"Csatorna rendben: „{title}\"", "ok")
 
     # Élő statisztika a heartbeathez.
     stats = {"msgs": 0, "tips": 0, "skipped": 0, "last_msg": "—"}
 
-    @client.on(events.NewMessage(chats=entity))
+    @client.on(events.NewMessage(chats=entities))
     async def handler(event):
         # raw_text: a sima szöveg markdown jelek NÉLKÜL. A .text visszarakná a
         # formázást (pl. **Pick:**), ami elrontja a parser pick-regexét → a tipp
         # tévesen „nem tipp-formátum"-ként kihullana. Fallback a .text-re.
         text = event.message.raw_text or event.message.text or ""
+        bookmaker = by_chat.get(event.chat_id, "tippmixpro")
+        label = BOOKMAKER_LABEL.get(bookmaker, bookmaker)
         stats["msgs"]    += 1
         stats["last_msg"] = datetime.now().strftime("%H:%M:%S")
         preview = " ".join(text.split())[:80] or "(nincs szöveg)"
-        emit(f"Üzenet érkezett: {preview}", "info")
+        emit(f"[{label}] Üzenet érkezett: {preview}", "info")
 
         tip = parse_tip(text)
         if tip is None:
             stats["skipped"] += 1
             emit("  → nem tipp-formátum, kihagyva.", "muted")
+            return
+
+        if tip.bookmaker != bookmaker:
+            stats["skipped"] += 1
+            emit(f"  → {tip.bookmaker_label}-tipp a(z) {label}-csatornában — "
+                 f"kihagyva (más iroda szorzójára szól).", "warn")
             return
 
         if strategy_filter and strategy_filter.lower() not in tip.strategy.lower():
@@ -125,7 +151,7 @@ async def start_watcher(
             return
 
         stats["tips"] += 1
-        emit(f"Tipp felismerve: {tip}", "tip")
+        emit(f"[{label}] Tipp felismerve: {tip}", "tip")
         on_tip(tip)   # szinkron, gyorsan visszatér (a munkát külön task végzi)
 
     emit("Figyelés aktív. Várom a tippeket…", "ok")

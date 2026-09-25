@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from paths import APP_DIR
 from gui import (
     apply_app_theme, _make_logo_label, ASSETS,
-    BTN_OUTLINE, C_FG, C_ACCENT, C_MUTED, C_GREEN, C_RED,
+    BTN_OUTLINE, C_FG, C_ACCENT, C_MUTED, C_GREEN, C_RED, _env_quote,
 )
 
 # ── Üzemeltető tölti ki ───────────────────────────────────────────────────────
@@ -38,12 +38,6 @@ BTN_SECONDARY = ("QPushButton{background:transparent;color:#8d8d9f;"
 BTN_LINK = ("QPushButton{background:transparent;color:#8d8d9f;border:none;}"
             "QPushButton:hover{color:#e8e8e8;}")
 
-
-def _env_quote(value: str) -> str:
-    """.env-biztos idézés (single-quote = teljesen literális a python-dotenv-ben)."""
-    if "'" not in value:
-        return f"'{value}'"
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 class _AsyncRunner:
@@ -480,7 +474,9 @@ class SetupWizard(QDialog):
             QMessageBox.critical(self, "Hiba", "A tét csak szám lehet!")
             return
 
-        ENV_PATH.write_text(
+        # A varázsló csak a SAJÁT kulcsait írja; a többi meglévő sor (Vegas-fiók és
+        # -csatorna, irodakapcsolók, remote token…) megmarad az újrafuttatáskor.
+        new_env = (
             f"TIPPMIXPRO_USER={_env_quote(self._tp_user)}\n"
             f"TIPPMIXPRO_PASS={_env_quote(self._tp_pass)}\n"
             f"BET_STAKE={stake}\n"
@@ -492,9 +488,16 @@ class SetupWizard(QDialog):
             f"TELEGRAM_STRATEGY_FILTER=\n"
             f"NOTIFY_ON_FAIL=1\n"
             f"NOTIFY_BOT_TOKEN={_env_quote(self._notify_token)}\n"
-            f"NOTIFY_CHAT_ID={_env_quote(self._notify_chat_id)}\n",
-            encoding="utf-8",
+            f"NOTIFY_CHAT_ID={_env_quote(self._notify_chat_id)}\n"
         )
+        own = {ln.split("=", 1)[0] for ln in new_env.splitlines()}
+        kept = []
+        if ENV_PATH.exists():
+            for ln in ENV_PATH.read_text(encoding="utf-8").splitlines():
+                if ln.strip() and ln.split("=", 1)[0].strip() not in own:
+                    kept.append(ln)
+        ENV_PATH.write_text(new_env + "".join(f"{ln}\n" for ln in kept),
+                            encoding="utf-8")
         self._saved = True
         QMessageBox.information(self, "Kész!",
                                "Beállítások elmentve.\nA BetPlacer most elindul.")

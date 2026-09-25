@@ -2,7 +2,8 @@
 Standalone BetPlacer — entry point.
 
 Indítás:
-  run.bat                      (ajánlott — nyitva tartja az ablakot)
+  BetPlacer.exe / run.bat      (ajánlott — konzolablak nélkül)
+  run_debug.bat                hibakereséshez (nyitva tartja a konzolt)
   python main.py               tét: .env-ből
   python main.py --stake 1000  tét felülírva
   python main.py --dry-run     teszt mód

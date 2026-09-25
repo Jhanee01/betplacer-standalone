@@ -29,11 +29,13 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
     QVBoxLayout, QHBoxLayout, QFrame, QTabWidget, QTextEdit, QPlainTextEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QAbstractItemView,
-    QDialog,
+    QDialog, QGridLayout,
 )
 
 from config import APP_VERSION
 from paths import APP_DIR
+from betplacer_core import BOOKMAKER_ENV, bookmaker_enabled, bookmaker_channel
+from tip_parser import BOOKMAKER_LABEL
 import stake_store
 
 ASSETS = APP_DIR / "assets"
@@ -313,6 +315,305 @@ class NotifyBotDialog(QDialog):
         self.accept()
 
 
+def _env_quote(value: str) -> str:
+    """.env-biztos idézés (single-quote = teljesen literális a python-dotenv-ben)."""
+    if "'" not in value:
+        return f"'{value}'"
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# Irodasor feliratai: kikapcsolt irodánál elhalványulnak.
+_ROW_LBL_QSS = (f"QLabel{{color:{C_FG}; font-size:14px;}}"
+                "QLabel:disabled{color:#5a5a5a;}")
+
+
+class AccountDialog(QDialog):
+    """Egy iroda belépési adatai (felhasználó / e-mail + jelszó) → .env."""
+
+    def __init__(self, bookmaker: str, parent=None, persist_env=None, log=None):
+        super().__init__(parent)
+        self._bm = bookmaker
+        self._e = BOOKMAKER_ENV[bookmaker]
+        self._persist_env = persist_env or (lambda k, v: None)
+        self._log = log or (lambda *a, **k: None)
+        label = BOOKMAKER_LABEL[bookmaker]
+        self.setWindowTitle(f"{label} fiók")
+        self.setModal(True)
+        self.setFixedWidth(420)
+        _icon = ASSETS / "icon.ico"
+        if _icon.exists():
+            self.setWindowIcon(QIcon(str(_icon)))
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 18, 24, 18)
+        root.setSpacing(10)
+        title = QLabel(f"{label} belépési adatok")
+        title.setStyleSheet(f"color:{C_FG}; font-size:16px; font-weight:600;")
+        root.addWidget(title)
+        desc = QLabel("A BetPlacer ezzel a fiókkal lép be és rak fogadást ennél az "
+                      "irodánál. Az adatok csak ezen a gépen, a .env fájlban tárolódnak.")
+        desc.setStyleSheet(f"color:{C_FG}; font-size:12px;")
+        desc.setWordWrap(True)
+        root.addWidget(desc)
+
+        user_lbl = QLabel("E-mail cím" if bookmaker == "vegas" else "Felhasználónév")
+        user_lbl.setStyleSheet(f"color:{C_FG}; font-size:13px;")
+        root.addWidget(user_lbl)
+        self._user = QLineEdit(os.getenv(self._e["user"], ""))
+        root.addWidget(self._user)
+        pw_lbl = QLabel("Jelszó")
+        pw_lbl.setStyleSheet(f"color:{C_FG}; font-size:13px;")
+        root.addWidget(pw_lbl)
+        self._pw = QLineEdit(os.getenv(self._e["pw"], ""))
+        self._pw.setEchoMode(QLineEdit.Password)
+        root.addWidget(self._pw)
+
+        row = QHBoxLayout()
+        cancel = QPushButton("Mégsem")
+        cancel.setStyleSheet(BTN_SECONDARY)
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        row.addStretch(1)
+        save = QPushButton("Mentés")
+        save.setStyleSheet(BTN_OUTLINE)
+        save.clicked.connect(self._save)
+        row.addWidget(save)
+        root.addLayout(row)
+
+    def _save(self):
+        user, pw = self._user.text().strip(), self._pw.text()
+        if not user or not pw:
+            QMessageBox.critical(self, "Hiba", "Add meg a felhasználót és a jelszót.")
+            return
+        for key, val in ((self._e["user"], user), (self._e["pw"], pw)):
+            os.environ[key] = val
+            self._persist_env(key, _env_quote(val))   # különleges karakter a jelszóban
+        self._log(f"{BOOKMAKER_LABEL[self._bm]} fiók mentve.", "ok")
+        self.accept()
+
+
+class StakeTab(QWidget):
+    """Egy iroda stratégia → tét táblázata. Az iroda Alap tétje a fallback."""
+
+    def __init__(self, bookmaker: str, base_stake, log):
+        super().__init__()
+        self._bm = bookmaker
+        self._base_stake = base_stake   # callable → az iroda alap tétje (str)
+        self._log = log
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(2, 6, 2, 2)
+
+        hint = QLabel(f'<span style="color:{C_ACCENT}; font-weight:700;">FONTOS!</span> '
+                      "Csak akkor módosíts, ha le van állítva a futás.")
+        hint.setStyleSheet(f"color:{C_FG}; font-size:12px;")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Stratégia", "Tét (Ft)", ""])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        sh = self.table.horizontalHeader()
+        sh.setSectionResizeMode(0, QHeaderView.Stretch)
+        sh.setSectionResizeMode(1, QHeaderView.Fixed)
+        sh.setSectionResizeMode(2, QHeaderView.Fixed)
+        self.table.setColumnWidth(1, 130)
+        self.table.setColumnWidth(2, 40)
+        lay.addWidget(self.table)
+
+        row = QHBoxLayout()
+        add_btn = QPushButton("+ Stratégia")
+        add_btn.setStyleSheet(BTN_OUTLINE)
+        add_btn.clicked.connect(self._on_add_strategy)
+        row.addWidget(add_btn)
+        self.save_btn = QPushButton("Mentés")
+        self.save_btn.setStyleSheet(BTN_OUTLINE)
+        self.save_btn.setToolTip(
+            "A stratégiánkénti tétek mentése most (Indításkor egyébként "
+            "automatikusan is mentődik).")
+        self.save_btn.clicked.connect(self._save_clicked)
+        row.addWidget(self.save_btn)
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet(f"color:{C_MUTED}; font-size:12px;")
+        row.addWidget(self._status_lbl)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        self.load()
+
+    def set_locked(self, locked: bool):
+        self.table.setEnabled(not locked)
+        self.save_btn.setEnabled(not locked)
+
+    def load(self):
+        """Mentett + ismert stratégiák betöltése a táblázatba."""
+        saved = stake_store.load_stakes(self._bm)
+        hidden = stake_store.load_hidden(self._bm)
+        names = [n for n in dict.fromkeys(list(saved.keys()) + stake_store.KNOWN_STRATEGIES)
+                 if n not in hidden]
+        self.table.setRowCount(0)
+        for name in names:
+            self._add_row(name, str(saved.get(name, "")), placeholder=self._base_stake())
+
+    def _add_row(self, name: str, stake: str, placeholder: str = "",
+                 name_editable: bool = False) -> int:
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        if name_editable:
+            # Egyéni (kézzel hozzáadott) stratégia: a név BEÍRHATÓ mező. A known /
+            # mentett nevek továbbra is fixek maradnak (lásd az else-ágat).
+            name_editor = QLineEdit(name)
+            name_editor.setPlaceholderText("Stratégia neve…")
+            name_editor.setStyleSheet(
+                "QLineEdit{background:#000000;color:#e8e8e8;border:1px solid #3a3a3a;"
+                "border-radius:6px;padding:4px 8px;}"
+                "QLineEdit:focus{border:1px solid #FDB900;}")
+            self.table.setCellWidget(r, 0, name_editor)
+        else:
+            # A stratégia neve fix (kulcs a párosításhoz) — ne lehessen átírni.
+            name_item = QTableWidgetItem(name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(r, 0, name_item)
+
+        # A tét: MINDIG látható beviteli mező (nem rejtett, dupla-kattintós cella),
+        # hogy egyértelmű legyen, hova kell írni. Csak pozitív egész fogadható el.
+        editor = QLineEdit(stake)
+        editor.setValidator(QIntValidator(1, 100_000_000, editor))
+        editor.setAlignment(Qt.AlignRight)
+        if placeholder:
+            editor.setPlaceholderText(f"alap ({placeholder})")
+            editor.setToolTip(f"Üresen hagyva az alap tétet kapja ({placeholder} Ft).")
+        editor.setStyleSheet(
+            "QLineEdit{background:#000000;color:#e8e8e8;border:1px solid #3a3a3a;"
+            "border-radius:6px;padding:4px 8px;}"
+            "QLineEdit:focus{border:1px solid #FDB900;}"
+            "QLineEdit:disabled{color:#6b6b6b;border:1px solid #2a2a2a;}")
+        self.table.setCellWidget(r, 1, editor)
+
+        # Törlés gomb MINDEN sorhoz. Beépített stratégiát is lehet törölni — a
+        # _delete_row elrejti, így nem tér vissza újratöltéskor.
+        del_btn = QPushButton("✕")
+        del_btn.setToolTip("Stratégia törlése")
+        del_btn.setCursor(Qt.PointingHandCursor)
+        del_btn.setStyleSheet(
+            "QPushButton{background:transparent;color:#d44a3a;border:none;"
+            "font-size:16px;font-weight:700;}"
+            "QPushButton:hover{color:#ff6b5a;}")
+        del_btn.clicked.connect(self._delete_row)
+        self.table.setCellWidget(r, 2, del_btn)
+
+        self.table.setRowHeight(r, 42)
+        return r
+
+    def _delete_row(self):
+        """A ✕-re kattintott sor törlése — azonnal perzisztálva (a beépített
+        stratégiát elrejti, hogy ne térjen vissza)."""
+        btn = self.sender()
+        for r in range(self.table.rowCount()):
+            if self.table.cellWidget(r, 2) is btn:
+                name = self._name_at(r)
+                self.table.removeRow(r)
+                if name:
+                    stake_store.delete_strategy(name, self._bm)
+                    self._set_status(f"Törölve: {name}", "#f2cc0c")
+                else:
+                    self._set_status("Sor törölve.", C_MUTED)
+                return
+
+    def _on_add_strategy(self):
+        """„+ Stratégia": új sor BEÍRHATÓ névmezővel, fókusszal a névre."""
+        r = self._add_row("", "", placeholder=self._base_stake(), name_editable=True)
+        self.table.scrollToBottom()
+        w = self.table.cellWidget(r, 0)
+        if w is not None:
+            w.setFocus()
+
+    def _set_status(self, text: str, color: str):
+        self._status_lbl.setText(text)
+        weight = "font-weight:600;" if color != C_MUTED else ""
+        self._status_lbl.setStyleSheet(f"color:{color}; font-size:12px; {weight}")
+
+    def _lock_name(self, r: int, name: str):
+        """A r. sor BEÍRHATÓ névmezőjét fix, nem-szerkeszthető cellára cseréli
+        (kiszürkül, mint a beépített stratégiák) — vizuálisan jelzi, hogy mentve van."""
+        self.table.removeCellWidget(r, 0)
+        it = QTableWidgetItem(name)
+        it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        self.table.setItem(r, 0, it)
+
+    def save(self) -> bool:
+        return stake_store.save_stakes(self.collect(), self._bm)
+
+    def _save_clicked(self):
+        """A stratégiánkénti tétek azonnali mentése (Indítás nélkül is)."""
+        label = BOOKMAKER_LABEL[self._bm]
+        stakes = self.collect()
+        if not stake_store.save_stakes(stakes, self._bm):
+            self._set_status("✗ Mentés sikertelen — a mappa nem írható.", C_RED)
+            self._log("Stratégiánkénti tét mentése SIKERTELEN — a program mappája "
+                      "nem írható (próbáld másik mappából futtatni).", "error")
+            return
+
+        # A sikeresen mentett EGYEDI (kézzel beírt) nevek FIXre váltanak — „kiszürkülnek".
+        # A tét nélkül maradt egyedi nevek szerkeszthetők maradnak (azokra figyelünk).
+        pending = []
+        for r in range(self.table.rowCount()):
+            w = self.table.cellWidget(r, 0)
+            if not isinstance(w, QLineEdit):
+                continue
+            name = w.text().strip()
+            if name in stakes:
+                self._lock_name(r, name)
+            elif name:
+                pending.append(name)
+
+        if stakes:
+            self._set_status(f"✓ Mentve — {len(stakes)} stratégia", C_GREEN)
+            self._log(f"[{label}] Stratégiánkénti tét mentve: " + ", ".join(
+                f"{k}={v}" for k, v in stakes.items()), "ok")
+        else:
+            self._set_status("Nincs menthető tét — írj számot egy sor mellé.", C_MUTED)
+            self._log("Nincs menthető tét — írj számot a stratégia mellé.", "muted")
+        if pending:
+            self._set_status(
+                f"⚠ Tét nélkül nem mentődik: {', '.join(pending)}", "#f2cc0c")
+            self._log("Tét nélkül (adj tétet, hogy mentődjön): "
+                      + ", ".join(pending), "warn")
+
+    def _name_at(self, r: int) -> str:
+        """A r. sor stratégia-neve — beírható (cellWidget) vagy fix (item) cellából."""
+        w = self.table.cellWidget(r, 0)
+        if isinstance(w, QLineEdit):
+            return w.text().strip()
+        it = self.table.item(r, 0)
+        return it.text().strip() if it else ""
+
+    def collect(self) -> dict:
+        out = {}
+        for r in range(self.table.rowCount()):
+            editor = self.table.cellWidget(r, 1)
+            name = self._name_at(r)
+            sval = (editor.text().strip() if isinstance(editor, QLineEdit) else "")
+            if not name or not sval:
+                continue
+            try:
+                iv = int(float(sval))
+                if iv > 0:
+                    out[name] = iv
+            except (ValueError, TypeError):
+                pass
+        return out
+
+    def ensure_row(self, strategy: str):
+        """Futás közben felbukkanó új stratégiához sor (láthatóság, alap tét)."""
+        if not strategy:
+            return
+        for r in range(self.table.rowCount()):
+            if self._name_at(r) == strategy:
+                return
+        self._add_row(strategy, "", placeholder=self._base_stake())
+
+
 class BetPlacerWindow(QMainWindow):
     # ── Háttérszálból a fő szálra: minden UI-frissítés ezeken át ────────────────
     sigLog     = Signal(str, str)          # msg, kind
@@ -408,35 +709,19 @@ class BetPlacerWindow(QMainWindow):
 
         root.addWidget(self._hline())
 
-        # ── Info sor: csatorna · tét · indítás ───────────────────────────────
+        # ── Irodasorok: kapcsoló · csatorna · iroda · alap tét · fiók ─────────
+        # Irodánként egy sor. A kapcsolóval ki lehet hagyni azt az irodát, amit
+        # valaki nem használ — kikapcsolva nem lép be és a csatornáját sem figyeli.
         info = QHBoxLayout()
-        channel = os.getenv("TELEGRAM_CHANNEL", "")
-        dry_run = os.getenv("BET_DRY_RUN", "0") == "1"
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+        self._books: dict = {}
+        for r, bm in enumerate(BOOKMAKER_ENV):
+            self._build_book_row(grid, r, bm)
+        info.addLayout(grid)
 
-        ch_cap = QLabel("Csatorna:")
-        ch_cap.setStyleSheet(f"color:{C_FG}; font-size:14px;")
-        info.addWidget(ch_cap)
-        self._channel_entry = QLineEdit(channel)
-        self._channel_entry.setFixedWidth(160)
-        self._channel_entry.setToolTip(
-            "Telegram csatorna chat ID (pl. -1003404037430) vagy @csatornanév.\n"
-            "Indításkor mentődik a .env-be; futás közben zárolt.")
-        info.addWidget(self._channel_entry)
-
-        info.addSpacing(12)
-        stake_lbl = QLabel("Alap tét:")
-        stake_lbl.setStyleSheet(f"color:{C_FG}; font-size:14px;")
-        info.addWidget(stake_lbl)
-
-        self._stake_entry = QLineEdit(os.getenv("BET_STAKE", "500"))
-        self._stake_entry.setFixedWidth(80)
-        self._stake_entry.setAlignment(Qt.AlignRight)
-        info.addWidget(self._stake_entry)
-        ft_lbl = QLabel("Ft")
-        ft_lbl.setStyleSheet(f"color:{C_FG}; font-size:14px;")
-        info.addWidget(ft_lbl)
-
-        if dry_run:
+        if os.getenv("BET_DRY_RUN", "0") == "1":
             dr = QLabel("  [DRY RUN]")
             dr.setStyleSheet(f"color:{C_ACCENT}; font-weight:600; font-size:14px;")
             info.addWidget(dr)
@@ -447,7 +732,7 @@ class BetPlacerWindow(QMainWindow):
         self._btn.setFont(QFont("Segoe UI Semibold", 11))
         self._btn.setCursor(Qt.PointingHandCursor)
         self._btn.clicked.connect(self._toggle)
-        info.addWidget(self._btn)
+        info.addWidget(self._btn, 0, Qt.AlignTop)
         root.addLayout(info)
 
         # ── Mai tippek táblázat ──────────────────────────────────────────────
@@ -455,17 +740,18 @@ class BetPlacerWindow(QMainWindow):
         tips_hdr.setStyleSheet(f"color:{C_FG}; font-weight:600; font-size:14px; margin-top:4px;")
         root.addWidget(tips_hdr)
 
-        self._tree = QTableWidget(0, 4)
-        self._tree.setHorizontalHeaderLabels(["Idő", "Meccs", "Pick", "Állapot"])
+        self._tree = QTableWidget(0, 5)
+        self._tree.setHorizontalHeaderLabels(["Idő", "Iroda", "Meccs", "Pick", "Állapot"])
         self._tree.verticalHeader().setVisible(False)
         self._tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._tree.setSelectionMode(QAbstractItemView.NoSelection)
         self._tree.setFocusPolicy(Qt.NoFocus)
         hh = self._tree.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self._tree.setMaximumHeight(190)
         root.addWidget(self._tree)
 
@@ -486,8 +772,13 @@ class BetPlacerWindow(QMainWindow):
         self._raw_view.setStyleSheet("QPlainTextEdit{" + PANEL_QSS + "}")
         self._tabs.addTab(self._raw_view, "Konzol (részletes)")
 
-        # Tétek (stratégiánként)
-        self._tabs.addTab(self._build_stake_tab(), "Tétek (stratégiánként)")
+        # Tétek (stratégiánként) — irodánként külön fül
+        self._stake_tabs: dict = {}
+        for bm in BOOKMAKER_ENV:
+            tab = StakeTab(bm, base_stake=lambda bm=bm: self._books[bm]["stake"].text().strip()
+                           or "500", log=self._log)
+            self._stake_tabs[bm] = tab
+            self._tabs.addTab(tab, f"Tétek ({BOOKMAKER_LABEL[bm]})")
         root.addWidget(self._tabs, 1)
 
         # ── Státuszsor ──────────────────────────────────────────────────────
@@ -501,220 +792,100 @@ class BetPlacerWindow(QMainWindow):
         ln.setStyleSheet("color:#2a2d3a; background:#2a2d3a; max-height:1px;")
         return ln
 
-    def _build_stake_tab(self):
-        """Stratégia → tét táblázat. A globális Alap tét a fallback."""
-        wrap = QWidget()
-        lay = QVBoxLayout(wrap)
-        lay.setContentsMargins(2, 6, 2, 2)
+    # ── Irodasorok ─────────────────────────────────────────────────────────────
 
-        hint = QLabel(f'<span style="color:{C_ACCENT}; font-weight:700;">FONTOS!</span> '
-                      "Csak akkor módosíts, ha le van állítva a futás.")
-        hint.setStyleSheet(f"color:{C_FG}; font-size:12px;")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
+    def _build_book_row(self, grid: "QGridLayout", r: int, bm: str):
+        """Egy iroda sora: [● AKTÍV] Csatorna N: [...]  Fogadóiroda: X  Alap tét: [..] Ft [Fiók]"""
+        e = BOOKMAKER_ENV[bm]
+        label = BOOKMAKER_LABEL[bm]
 
-        self._stake_table = QTableWidget(0, 3)
-        self._stake_table.setHorizontalHeaderLabels(["Stratégia", "Tét (Ft)", ""])
-        self._stake_table.verticalHeader().setVisible(False)
-        self._stake_table.setSelectionMode(QAbstractItemView.NoSelection)
-        sh = self._stake_table.horizontalHeader()
-        sh.setSectionResizeMode(0, QHeaderView.Stretch)
-        sh.setSectionResizeMode(1, QHeaderView.Fixed)
-        sh.setSectionResizeMode(2, QHeaderView.Fixed)
-        self._stake_table.setColumnWidth(1, 130)
-        self._stake_table.setColumnWidth(2, 40)
-        lay.addWidget(self._stake_table)
+        toggle = QPushButton()
+        toggle.setCheckable(True)
+        toggle.setCursor(Qt.PointingHandCursor)
+        toggle.setFixedWidth(128)
+        toggle.setToolTip(f"{label} be/ki kapcsolása. Kikapcsolva a BetPlacer nem lép be "
+                          f"ide és a csatornáját sem figyeli.")
+        toggle.toggled.connect(lambda on, bm=bm: self._on_book_toggled(bm, on))
+        # A felhasználói kattintás (nem a programból állított állapot) ellenőrzi,
+        # hogy van-e fiók — AKTÍV csak belépési adattal rendelkező iroda lehet.
+        toggle.clicked.connect(lambda on, bm=bm: self._on_book_clicked(bm, on))
 
-        row = QHBoxLayout()
-        add_btn = QPushButton("+ Stratégia")
-        add_btn.setStyleSheet(BTN_OUTLINE)
-        add_btn.clicked.connect(self._on_add_strategy)
-        row.addWidget(add_btn)
-        self._save_stakes_btn = QPushButton("Mentés")
-        self._save_stakes_btn.setStyleSheet(BTN_OUTLINE)
-        self._save_stakes_btn.setToolTip(
-            "A stratégiánkénti tétek mentése most (Indításkor egyébként "
-            "automatikusan is mentődik).")
-        self._save_stakes_btn.clicked.connect(self._save_stakes_clicked)
-        row.addWidget(self._save_stakes_btn)
-        self._stake_status_lbl = QLabel("")
-        self._stake_status_lbl.setStyleSheet(f"color:{C_MUTED}; font-size:12px;")
-        row.addWidget(self._stake_status_lbl)
-        row.addStretch(1)
-        lay.addLayout(row)
+        ch_cap = QLabel(f"Csatorna {r + 1}:")
+        ch_cap.setStyleSheet(_ROW_LBL_QSS)
+        channel = QLineEdit(bookmaker_channel(bm))
+        channel.setFixedWidth(160)
+        channel.setToolTip(
+            "Telegram csatorna chat ID (pl. -1003404037430) vagy @csatornanév.\n"
+            "Indításkor mentődik a .env-be; futás közben zárolt.")
 
-        self._load_stake_table()
-        return wrap
+        book_lbl = QLabel(f"Fogadóiroda: <b>{label}</b>")
+        book_lbl.setStyleSheet(_ROW_LBL_QSS)
+        book_lbl.setMinimumWidth(170)
 
-    # ── Stratégiánkénti tét táblázat kezelése ──────────────────────────────────
+        stake_lbl = QLabel("Alap tét:")
+        stake_lbl.setStyleSheet(_ROW_LBL_QSS)
+        stake = QLineEdit(os.getenv(e["stake"], os.getenv("BET_STAKE", "500")))
+        stake.setFixedWidth(80)
+        stake.setAlignment(Qt.AlignRight)
+        ft_lbl = QLabel("Ft")
+        ft_lbl.setStyleSheet(_ROW_LBL_QSS)
 
-    def _load_stake_table(self):
-        """Mentett + ismert stratégiák betöltése a táblázatba."""
-        saved = stake_store.load_stakes()
-        hidden = stake_store.load_hidden()
-        default = os.getenv("BET_STAKE", "500")
-        names = [n for n in dict.fromkeys(list(saved.keys()) + stake_store.KNOWN_STRATEGIES)
-                 if n not in hidden]
-        self._stake_table.setRowCount(0)
-        for name in names:
-            self._add_stake_row(name, str(saved.get(name, "")), placeholder=default)
+        account = QPushButton("Fiók")
+        account.setStyleSheet(BTN_OUTLINE)
+        account.setCursor(Qt.PointingHandCursor)
+        account.setToolTip(f"{label} belépési adatok")
+        account.clicked.connect(lambda _=False, bm=bm: self._open_account(bm))
 
-    def _add_stake_row(self, name: str, stake: str, placeholder: str = "",
-                       name_editable: bool = False) -> int:
-        r = self._stake_table.rowCount()
-        self._stake_table.insertRow(r)
-        if name_editable:
-            # Egyéni (kézzel hozzáadott) stratégia: a név BEÍRHATÓ mező. A known /
-            # mentett nevek továbbra is fixek maradnak (lásd az else-ágat).
-            name_editor = QLineEdit(name)
-            name_editor.setPlaceholderText("Stratégia neve…")
-            name_editor.setStyleSheet(
-                "QLineEdit{background:#000000;color:#e8e8e8;border:1px solid #3a3a3a;"
-                "border-radius:6px;padding:4px 8px;}"
-                "QLineEdit:focus{border:1px solid #FDB900;}")
-            self._stake_table.setCellWidget(r, 0, name_editor)
-        else:
-            # A stratégia neve fix (kulcs a párosításhoz) — ne lehessen átírni.
-            name_item = QTableWidgetItem(name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self._stake_table.setItem(r, 0, name_item)
+        for c, w in enumerate((toggle, ch_cap, channel, book_lbl, stake_lbl, stake,
+                               ft_lbl, account)):
+            grid.addWidget(w, r, c)
 
-        # A tét: MINDIG látható beviteli mező (nem rejtett, dupla-kattintós cella),
-        # hogy egyértelmű legyen, hova kell írni. Csak pozitív egész fogadható el.
-        editor = QLineEdit(stake)
-        editor.setValidator(QIntValidator(1, 100_000_000, editor))
-        editor.setAlignment(Qt.AlignRight)
-        if placeholder:
-            editor.setPlaceholderText(f"alap ({placeholder})")
-            editor.setToolTip(f"Üresen hagyva az alap tétet kapja ({placeholder} Ft).")
-        editor.setStyleSheet(
-            "QLineEdit{background:#000000;color:#e8e8e8;border:1px solid #3a3a3a;"
-            "border-radius:6px;padding:4px 8px;}"
-            "QLineEdit:focus{border:1px solid #FDB900;}"
-            "QLineEdit:disabled{color:#6b6b6b;border:1px solid #2a2a2a;}")
-        self._stake_table.setCellWidget(r, 1, editor)
+        self._books[bm] = dict(toggle=toggle, channel=channel, stake=stake,
+                               account=account, dim=(ch_cap, channel, book_lbl,
+                                                     stake_lbl, stake, ft_lbl))
+        # Mentett fiók nélkül akkor sem AKTÍV, ha a .env szerint be volt kapcsolva.
+        toggle.setChecked(bookmaker_enabled(bm) and self._has_account(bm))
+        self._on_book_toggled(bm, toggle.isChecked())
 
-        # Törlés gomb MINDEN sorhoz. Beépített stratégiát is lehet törölni — a
-        # _delete_stake_row elrejti, így nem tér vissza újratöltéskor.
-        del_btn = QPushButton("✕")
-        del_btn.setToolTip("Stratégia törlése")
-        del_btn.setCursor(Qt.PointingHandCursor)
-        del_btn.setStyleSheet(
-            "QPushButton{background:transparent;color:#d44a3a;border:none;"
-            "font-size:16px;font-weight:700;}"
-            "QPushButton:hover{color:#ff6b5a;}")
-        del_btn.clicked.connect(self._delete_stake_row)
-        self._stake_table.setCellWidget(r, 2, del_btn)
+    @staticmethod
+    def _has_account(bm: str) -> bool:
+        e = BOOKMAKER_ENV[bm]
+        return bool(os.getenv(e["user"], "")) and bool(os.getenv(e["pw"], ""))
 
-        self._stake_table.setRowHeight(r, 42)
-        return r
-
-    def _delete_stake_row(self):
-        """A ✕-re kattintott sor törlése — azonnal perzisztálva (a beépített
-        stratégiát elrejti, hogy ne térjen vissza)."""
-        btn = self.sender()
-        for r in range(self._stake_table.rowCount()):
-            if self._stake_table.cellWidget(r, 2) is btn:
-                name = self._strategy_name_at(r)
-                self._stake_table.removeRow(r)
-                if name:
-                    stake_store.delete_strategy(name)
-                    self._set_stake_status(f"Törölve: {name}", "#f2cc0c")
-                else:
-                    self._set_stake_status("Sor törölve.", C_MUTED)
-                return
-
-    def _on_add_strategy(self):
-        """„+ Stratégia": új sor BEÍRHATÓ névmezővel, fókusszal a névre."""
-        default = os.getenv("BET_STAKE", "500")
-        r = self._add_stake_row("", "", placeholder=default, name_editable=True)
-        self._stake_table.scrollToBottom()
-        w = self._stake_table.cellWidget(r, 0)
-        if w is not None:
-            w.setFocus()
-
-    def _set_stake_status(self, text: str, color: str):
-        self._stake_status_lbl.setText(text)
-        weight = "font-weight:600;" if color != C_MUTED else ""
-        self._stake_status_lbl.setStyleSheet(f"color:{color}; font-size:12px; {weight}")
-
-    def _lock_strategy_name(self, r: int, name: str):
-        """A r. sor BEÍRHATÓ névmezőjét fix, nem-szerkeszthető cellára cseréli
-        (kiszürkül, mint a beépített stratégiák) — vizuálisan jelzi, hogy mentve van."""
-        self._stake_table.removeCellWidget(r, 0)
-        it = QTableWidgetItem(name)
-        it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-        self._stake_table.setItem(r, 0, it)
-
-    def _save_stakes_clicked(self):
-        """A stratégiánkénti tétek azonnali mentése (Indítás nélkül is)."""
-        stakes = self._collect_stake_table()
-        ok = stake_store.save_stakes(stakes)
-        if not ok:
-            self._set_stake_status("✗ Mentés sikertelen — a mappa nem írható.", C_RED)
-            self._log("Stratégiánkénti tét mentése SIKERTELEN — a program mappája "
-                      "nem írható (próbáld másik mappából futtatni).", "error")
+    def _on_book_clicked(self, bm: str, on: bool):
+        """Bekapcsoláskor: ha nincs mentett fiók, rögtön a Fiók ablak; ha adat
+        nélkül zárják be, a kapcsoló visszaáll KIKAPCSOLVA-ra."""
+        if not on or self._has_account(bm):
             return
+        self._open_account(bm)
+        if not self._has_account(bm):
+            self._books[bm]["toggle"].setChecked(False)
+            self._log(f"{BOOKMAKER_LABEL[bm]}: belépési adat nélkül nem kapcsolható be.",
+                      "warn")
 
-        # A sikeresen mentett EGYEDI (kézzel beírt) nevek FIXre váltanak — „kiszürkülnek".
-        # A tét nélkül maradt egyedi nevek szerkeszthetők maradnak (azokra figyelünk).
-        pending = []
-        for r in range(self._stake_table.rowCount()):
-            w = self._stake_table.cellWidget(r, 0)
-            if not isinstance(w, QLineEdit):
-                continue
-            name = w.text().strip()
-            if name in stakes:
-                self._lock_strategy_name(r, name)
-            elif name:
-                pending.append(name)
-
-        if stakes:
-            self._set_stake_status(f"✓ Mentve — {len(stakes)} stratégia", C_GREEN)
-            self._log("Stratégiánkénti tét mentve: " + ", ".join(
-                f"{k}={v}" for k, v in stakes.items()), "ok")
-        else:
-            self._set_stake_status("Nincs menthető tét — írj számot egy sor mellé.",
-                                   C_MUTED)
-            self._log("Nincs menthető tét — írj számot a stratégia mellé.", "muted")
-        if pending:
-            self._set_stake_status(
-                f"⚠ Tét nélkül nem mentődik: {', '.join(pending)}", "#f2cc0c")
-            self._log("Tét nélkül (adj tétet, hogy mentődjön): "
-                      + ", ".join(pending), "warn")
-
-    def _strategy_name_at(self, r: int) -> str:
-        """A r. sor stratégia-neve — beírható (cellWidget) vagy fix (item) cellából."""
-        w = self._stake_table.cellWidget(r, 0)
-        if isinstance(w, QLineEdit):
-            return w.text().strip()
-        it = self._stake_table.item(r, 0)
-        return it.text().strip() if it else ""
-
-    def _collect_stake_table(self) -> dict:
-        out = {}
-        for r in range(self._stake_table.rowCount()):
-            editor = self._stake_table.cellWidget(r, 1)
-            name = self._strategy_name_at(r)
-            sval = (editor.text().strip() if isinstance(editor, QLineEdit) else "")
-            if not name or not sval:
-                continue
-            try:
-                iv = int(float(sval))
-                if iv > 0:
-                    out[name] = iv
-            except (ValueError, TypeError):
-                pass
-        return out
-
-    def _ensure_strategy_row(self, strategy: str):
-        """Futás közben felbukkanó új stratégiához sor (láthatóság, alap tét)."""
-        if not strategy:
+    def _on_book_toggled(self, bm: str, on: bool):
+        """A kapcsoló felirata/színe + a sor elhalványítása kikapcsolt irodánál."""
+        w = self._books.get(bm)
+        if not w:
             return
-        for r in range(self._stake_table.rowCount()):
-            if self._strategy_name_at(r) == strategy:
-                return
-        self._add_stake_row(strategy, "", placeholder=os.getenv("BET_STAKE", "500"))
+        t = w["toggle"]
+        if on:
+            t.setText("● AKTÍV")
+            t.setStyleSheet(
+                f"QPushButton{{background:#0a1e0a;color:{C_GREEN};border:1px solid {C_GREEN};"
+                "border-radius:6px;padding:6px 10px;font-weight:700;}"
+                "QPushButton:disabled{color:#2f6b45;border:1px solid #2f6b45;}")
+        else:
+            t.setText("○ KIKAPCSOLVA")
+            t.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{C_MUTED};border:1px solid #3a3a3a;"
+                "border-radius:6px;padding:6px 10px;font-weight:700;}"
+                "QPushButton:disabled{color:#5a5a5a;}")
+        for d in w["dim"]:
+            d.setEnabled(on and not self._running)
+
+    def _open_account(self, bm: str):
+        AccountDialog(bm, self, persist_env=self._persist_env, log=self._log).exec()
 
     # ══════════════════════════════════════════════════════════════════════════
     # stdout/stderr átirányítás
@@ -764,7 +935,10 @@ class BetPlacerWindow(QMainWindow):
         self._foot_lbl.setText(text)
 
     def _apply_status(self, key: str, tip, status: str, detail: str):
-        self._ensure_strategy_row(getattr(tip, "strategy_key", "") or getattr(tip, "strategy", ""))
+        bm = getattr(tip, "bookmaker", "tippmixpro")
+        if bm in self._stake_tabs:
+            self._stake_tabs[bm].ensure_row(
+                getattr(tip, "strategy_key", "") or getattr(tip, "strategy", ""))
         label, color = STATUS_LABELS.get(status, (status, C_ACCENT))
         if status == "retry" and detail:
             label = f"● esemény vár {detail}"
@@ -773,8 +947,8 @@ class BetPlacerWindow(QMainWindow):
         elif status == "skipped" and detail:
             label = f"✗ kihagyva ({detail})"
         meccs = f"{tip.home_clean}–{tip.away_clean}"
-        values = [tip.time, meccs, tip.pick_str, label]
-        colors = [None, None, None, color]
+        values = [tip.time, BOOKMAKER_LABEL.get(bm, bm), meccs, tip.pick_str, label]
+        colors = [None, None, None, None, color]
 
         r = self._tip_rows.get(key)
         if r is None or r >= self._tree.rowCount():
@@ -796,19 +970,18 @@ class BetPlacerWindow(QMainWindow):
             self._status_lbl.setStyleSheet(f"color:{C_GREEN}; font-weight:600;")
             self._btn.setText("■  Leállítás")
             self._btn.setStyleSheet(BTN_STOP)
-            self._stake_entry.setEnabled(False)
-            self._channel_entry.setEnabled(False)
-            self._stake_table.setEnabled(False)
-            self._save_stakes_btn.setEnabled(False)
         else:
             self._status_lbl.setText("● LEÁLLÍTVA")
             self._status_lbl.setStyleSheet(f"color:{C_FG}; font-weight:600;")
             self._btn.setText("▶  Indítás")
             self._btn.setStyleSheet(BTN_START)
-            self._stake_entry.setEnabled(True)
-            self._channel_entry.setEnabled(True)
-            self._stake_table.setEnabled(True)
-            self._save_stakes_btn.setEnabled(True)
+        # Futás közben az irodasorok és a tétek zároltak (a core induláskor olvas).
+        for bm, w in self._books.items():
+            w["toggle"].setEnabled(not running)
+            w["account"].setEnabled(not running)
+            self._on_book_toggled(bm, w["toggle"].isChecked())
+        for tab in self._stake_tabs.values():
+            tab.set_locked(running)
 
     # ── A core/háttér ezeket hívja (háttérszálból) → signal emit ───────────────
 
@@ -832,39 +1005,63 @@ class BetPlacerWindow(QMainWindow):
             self._start()
 
     def _start(self):
-        raw = self._stake_entry.text().strip()
-        try:
-            stake = int(float(raw))
-            if stake <= 0:
-                raise ValueError
-        except (ValueError, TypeError):
-            QMessageBox.critical(self, "Hibás tét",
-                                 "Az alap tét csak pozitív egész szám lehet (Ft).")
+        # Ellenőrzés: legalább egy bekapcsolt iroda, és annak minden adata megvan.
+        active = [bm for bm, w in self._books.items() if w["toggle"].isChecked()]
+        if not active:
+            QMessageBox.critical(self, "Nincs aktív iroda",
+                                 "Kapcsolj be legalább egy fogadóirodát (TippmixPro / Vegas).")
             return
-        channel = self._channel_entry.text().strip()
-        if not channel:
-            QMessageBox.critical(
-                self, "Hiányzó csatorna",
-                "Add meg a Telegram csatorna chat ID-t (pl. -1003404037430) "
-                "vagy a @csatornanevet.")
-            return
+        stakes_ft: dict = {}
+        for bm in active:
+            w, e, label = self._books[bm], BOOKMAKER_ENV[bm], BOOKMAKER_LABEL[bm]
+            try:
+                stakes_ft[bm] = int(float(w["stake"].text().strip()))
+                if stakes_ft[bm] <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                QMessageBox.critical(self, "Hibás tét",
+                                     f"{label}: az alap tét csak pozitív egész szám lehet (Ft).")
+                return
+            if not w["channel"].text().strip():
+                QMessageBox.critical(
+                    self, "Hiányzó csatorna",
+                    f"{label}: add meg a Telegram csatorna chat ID-t "
+                    "(pl. -1003404037430) vagy a @csatornanevet.")
+                return
+            if not os.getenv(e["user"], "") or not os.getenv(e["pw"], ""):
+                QMessageBox.information(
+                    self, "Hiányzó fiók",
+                    f"{label}: még nincs megadva a belépési adat — add meg most.")
+                self._open_account(bm)
+                if not os.getenv(e["user"], "") or not os.getenv(e["pw"], ""):
+                    return
 
-        self._stake_entry.setText(str(stake))
-        os.environ["BET_STAKE"] = str(stake)
-        self._persist_env("BET_STAKE", str(stake))
+        # Mentés + érvényesítés erre a futásra (a core .env-ből olvas). A kikapcsolt
+        # iroda beírt csatornája/tétje is megmarad a következő bekapcsolásig.
+        for bm, w in self._books.items():
+            e, label = BOOKMAKER_ENV[bm], BOOKMAKER_LABEL[bm]
+            on = bm in active
+            values = {e["enabled"]: "1" if on else "0",
+                      e["channel"]: w["channel"].text().strip()}
+            if bm in stakes_ft:
+                w["stake"].setText(str(stakes_ft[bm]))
+                values[e["stake"]] = str(stakes_ft[bm])
+            for key, val in values.items():
+                os.environ[key] = val
+                self._persist_env(key, val)
+            if on:
+                self._log(f"[{label}] Csatorna: {values[e['channel']]} · "
+                          f"Alap tét: {stakes_ft[bm]} Ft", "muted")
+            else:
+                self._log(f"[{label}] KIKAPCSOLVA", "muted")
 
-        # Csatorna mentése + érvényesítése erre a futásra (a core .env-ből olvas).
-        os.environ["TELEGRAM_CHANNEL"] = channel
-        self._persist_env("TELEGRAM_CHANNEL", channel)
-        self._log(f"Csatorna: {channel}", "muted")
-
-        # Stratégiánkénti tétek mentése (a core induláskor olvassa be).
-        stakes = self._collect_stake_table()
-        stake_store.save_stakes(stakes)
-        if stakes:
-            self._log("Stratégiánkénti tét mentve: " + ", ".join(
-                f"{k}={v}" for k, v in stakes.items()), "muted")
-        self._log(f"Alap tét: {stake} Ft", "muted")
+            # Stratégiánkénti tétek mentése (a core induláskor olvassa be).
+            tab = self._stake_tabs[bm]
+            tab.save()
+            stakes = tab.collect()
+            if on and stakes:
+                self._log(f"[{label}] Stratégiánkénti tét mentve: " + ", ".join(
+                    f"{k}={v}" for k, v in stakes.items()), "muted")
 
         self._running = True
         self._stop_evt.clear()

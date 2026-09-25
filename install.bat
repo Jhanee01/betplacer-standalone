@@ -68,6 +68,6 @@ echo ============================================
 echo  TELEPITES KESZ! Bezarhatod ezt az ablakot.
 echo ============================================
 echo.
-echo Inditashoz kattints duplán a run.bat fajlra.
+echo Inditashoz kattints duplán a BetPlacer.exe (vagy a run.bat) fajlra.
 echo.
 pause
