@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 
 # ── Esemény-újrapróbálás (csak az adott tippre vonatkozik) ────────────────────
+TIGHT_KICKOFF_S   = 480   # ennyi mp-nél közelebbi kezdésnél a véletlen várakozás elmarad
 EVENT_RETRY_WAIT  = 300   # 5 perc — NEM blokkolja a többi tippet (async sleep)
 MAX_EVENT_RETRIES = 3
 
@@ -34,6 +35,22 @@ MAX_EVENT_RETRIES = 3
 # kijelző közben elsötétülhet, de a rendszer ébren marad és tovább rak.
 _ES_CONTINUOUS      = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
+
+
+def _seconds_to_kickoff(hhmm: str):
+    """Hány mp van a meccs kezdéséig. A tipp élőben érkezik, ezért a kezdés a
+    "HH:MM" következő előfordulása (éjfél után másnap). None, ha nem értelmezhető.
+    A kezdés körüli pár percet (még friss tipp) nem toljuk át másnapra."""
+    try:
+        h, m = map(int, str(hhmm).strip().split(":"))
+        now = datetime.now()
+        ko = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        left = (ko - now).total_seconds()
+        if left < -600:
+            left += 86400
+        return left
+    except Exception:
+        return None
 
 
 def _prevent_sleep() -> bool:
@@ -289,6 +306,12 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         tag   = f"[{tip.bookmaker_label}]"
         engine, executor = engines[bm], executors[bm]
         delay = random.uniform(30, 120)   # tippenként külön sorsolva
+        # Szoros kezdésnél a várakozás nem csúsztathatja a megrakást a kezdés utánra:
+        # legkésőbb TIGHT_KICKOFF_S-mal a kezdés előtt induljon.
+        left = _seconds_to_kickoff(tip.time)
+        if left is not None and delay > left - TIGHT_KICKOFF_S:
+            delay = max(0.0, left - TIGHT_KICKOFF_S)
+            log(f"{tag} Szoros kezdés ({left / 60:.1f} perc múlva) — rövidített várakozás", "info")
         log(f"{tag} Új tipp érkezett — {delay:.0f} mp múlva rakjuk meg:\n"
             f"  {tip.time}  {tip.home_team} vs {tip.away_team}\n"
             f"  {tip.pick_str} @ {tip.odds}", "tip")

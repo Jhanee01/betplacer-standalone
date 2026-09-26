@@ -134,7 +134,18 @@ def is_logged_in(page) -> bool:
 def _dismiss_cookie(page):
     """Cookie-ablak elvetése a legszűkebb opcióval (csak a nélkülözhetetlen sütik).
     Az ablak eltakarja a gombokat; az 'elutasítás' gombja a nyitó nézetben rejtett,
-    ezért a Cookiebot saját API-ján adjuk meg ugyanezt. A döntés a contextben megmarad."""
+    ezért a Cookiebot saját API-ján adjuk meg ugyanezt. A döntés a contextben megmarad.
+    Emellett a 60 percenként felugró „Emlékeztető” (felelős játék) ablakot is bezárja a
+    „Tovább játszom” gombbal — különben az ablak eltakarja az odds-gombot és a szelvény
+    nem nyílik meg."""
+    try:
+        cont = page.get_by_role("button", name=re.compile(r"Tovább játszom", re.I))
+        if cont.count() > 0 and cont.first.is_visible():
+            human_click(page, cont.first)
+            page.wait_for_timeout(1000)
+            log("  Vegas emlékeztető ablak bezárva (Tovább játszom)")
+    except Exception as e:
+        log(f"  Vegas emlékeztető bezárása sikertelen: {e}")
     try:
         if page.locator("#CybotCookiebotDialog >> visible=true").count() == 0:
             return
@@ -303,6 +314,7 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
             continue
 
         # 3. Tiszta szelvény, majd az odds-gomb (odd-ID alapján).
+        _dismiss_cookie(page)
         _clear_slip(page)
         found = _find_odd(page, odd["id"])
         if not found:
@@ -346,6 +358,7 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
             log("  Fogadok gomb nem található!")
             screenshot(page, "vegas_fogad_gomb_nincs")
             continue
+        _dismiss_cookie(page)
         before = _slip_text(page)
         log("  Fogadok gomb kattintás")
         human_click(page, fogad)
