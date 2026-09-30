@@ -92,18 +92,40 @@ BOOKMAKER_ENV = {
 }
 
 
-def bookmaker_channel(bookmaker: str) -> str:
-    """Az iroda csatornája a .env-ből, hiányában az alapérték."""
-    e = BOOKMAKER_ENV[bookmaker]
+# ── Források: egy forrás = egy figyelt Telegram-csatorna + iroda + alap tét ────
+# FIFA-források: a fenti irodasorok (a .env-kulcsaik változatlanok, visszafelé
+# kompatibilis). Real Event források (v3.1.0): a Jhanee Tipster Real Vegas / Real
+# TippmixPro csatornái — valódi foci/kézi/kosár meccsek. A belépést az iroda
+# FIFA-fiókjával közösen használják (egy iroda = egy böngésző, egy belépés).
+REAL_ENV = {
+    "real_tippmixpro": dict(channel="REAL_CHANNEL_TIPPMIXPRO", stake="REAL_STAKE_TIPPMIXPRO",
+                            enabled="REAL_TIPPMIXPRO_ENABLED", default_on="0",
+                            default_channel="-1004347346270", bookmaker="tippmixpro"),
+    "real_vegas":      dict(channel="REAL_CHANNEL_VEGAS", stake="REAL_STAKE_VEGAS",
+                            enabled="REAL_VEGAS_ENABLED", default_on="0",
+                            default_channel="-1004432306659", bookmaker="vegas"),
+}
+SOURCE_ENV = {**{bm: dict(e, bookmaker=bm) for bm, e in BOOKMAKER_ENV.items()}, **REAL_ENV}
+
+
+def source_bookmaker(src: str) -> str:
+    return SOURCE_ENV[src]["bookmaker"]
+
+
+def bookmaker_channel(src: str) -> str:
+    """A forrás (FIFA-iroda vagy Real Event) csatornája a .env-ből, hiányában az alapérték."""
+    e = SOURCE_ENV[src]
     return os.getenv(e["channel"], "").strip() or e["default_channel"]
 
 
-def bookmaker_enabled(bookmaker: str) -> bool:
-    e = BOOKMAKER_ENV[bookmaker]
+def bookmaker_enabled(src: str) -> bool:
+    e = SOURCE_ENV[src]
     return os.getenv(e["enabled"], e["default_on"]).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _fmt_tip_line(tip) -> str:
+    if hasattr(tip, "fmt_line"):          # Real Event tipp
+        return tip.fmt_line()
     """Egységes egysoros tipp-formátum az értesítésekhez (tét NÉLKÜL, játékosnevekkel).
     A standalone home_team/away_team már tartalmazza a játékost zárójelben
     (pl. 'Germany (Manuel)'). Pl.: '14:52 | Germany (Manuel) vs Scotland (John) | OU UNDER 6.5'."""
@@ -124,8 +146,9 @@ def _parse_channel(raw: str):
 def _read_config() -> SimpleNamespace:
     """Beállítások beolvasása env-ből + hiányzó kulcsok kigyűjtése.
 
-    `books`: a BEKAPCSOLT irodák {iroda: SimpleNamespace(username, password,
-    channel, stake)} — csak ezekhez indul motor és csak ezek csatornáját figyeljük."""
+    `sources`: a BEKAPCSOLT források {forrás: SimpleNamespace(bookmaker, channel,
+    stake)}; `creds`: {iroda: (felhasználó, jelszó)} — motor csak ezekhez az
+    irodákhoz indul (a FIFA és a Real Event ugyanazt a belépést használja)."""
     dry_run  = os.getenv("BET_DRY_RUN", "0") == "1"
     api_id   = int(os.getenv("TELEGRAM_API_ID", "0"))
     api_hash = os.getenv("TELEGRAM_API_HASH", "")
@@ -134,26 +157,30 @@ def _read_config() -> SimpleNamespace:
 
     required = {"TELEGRAM_API_ID": str(api_id), "TELEGRAM_API_HASH": api_hash,
                 "TELEGRAM_PHONE": phone}
-    books = {}
-    for bm, e in BOOKMAKER_ENV.items():
-        if not bookmaker_enabled(bm):
+    sources, creds = {}, {}
+    from config import REAL_EVENT_ENABLED
+    for src, e in SOURCE_ENV.items():
+        if not bookmaker_enabled(src):
             continue
-        ch_raw = bookmaker_channel(bm)
-        books[bm] = SimpleNamespace(
-            username=os.getenv(e["user"], ""), password=os.getenv(e["pw"], ""),
-            channel=_parse_channel(ch_raw),
+        if src in REAL_ENV and not REAL_EVENT_ENABLED:
+            continue            # a Real Event egyelőre használaton kívül
+        bm, acc = e["bookmaker"], BOOKMAKER_ENV[e["bookmaker"]]
+        ch_raw = bookmaker_channel(src)
+        sources[src] = SimpleNamespace(
+            bookmaker=bm, channel=_parse_channel(ch_raw),
             stake=int(float(os.getenv(e["stake"], os.getenv("BET_STAKE", "500")))),
         )
-        required.update({e["user"]: books[bm].username, e["pw"]: books[bm].password,
+        creds[bm] = (os.getenv(acc["user"], ""), os.getenv(acc["pw"], ""))
+        required.update({acc["user"]: creds[bm][0], acc["pw"]: creds[bm][1],
                          e["channel"]: ch_raw})
 
     missing = [k for k, v in required.items() if not v or v == "0"]
-    if not books:
-        missing.append("legalább egy bekapcsolt iroda (TippmixPro / Vegas)")
+    if not sources:
+        missing.append("legalább egy bekapcsolt forrás (FIFA vagy Real Event)")
 
     return SimpleNamespace(
         dry_run=dry_run, api_id=api_id, api_hash=api_hash, phone=phone,
-        strategy=strategy, books=books, missing=missing,
+        strategy=strategy, sources=sources, creds=creds, missing=missing,
     )
 
 
@@ -186,19 +213,19 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         log("Futtasd újra a beállítási varázslót: python main.py --setup", "muted")
         return
 
-    from tip_parser import BOOKMAKER_LABEL
-    for bm in BOOKMAKER_ENV:
-        state = "AKTÍV" if bm in cfg.books else "KIKAPCSOLVA"
-        log(f"{BOOKMAKER_LABEL[bm]}: {state}", "ok" if bm in cfg.books else "muted")
+    from tip_parser import BOOKMAKER_LABEL, SOURCE_LABEL
+    for src in SOURCE_ENV:
+        state = "AKTÍV" if src in cfg.sources else "KIKAPCSOLVA"
+        log(f"{SOURCE_LABEL[src]}: {state}", "ok" if src in cfg.sources else "muted")
 
     # Stratégiánkénti tét — induláskori pillanatkép irodánként (a GUI futás közben
     # zárolja a szerkesztést). Ha egy stratégiához nincs külön tét, az iroda alap
     # tétje él.
     from stake_store import load_stakes
-    stake_maps = {bm: load_stakes(bm) for bm in cfg.books}
-    for bm, sm in stake_maps.items():
+    stake_maps = {src: load_stakes(src) for src in cfg.sources}
+    for src, sm in stake_maps.items():
         if sm:
-            log(f"[{BOOKMAKER_LABEL[bm]}] Stratégiánkénti tét: " + ", ".join(
+            log(f"[{SOURCE_LABEL[src]}] Stratégiánkénti tét: " + ", ".join(
                 f"{k}={v}Ft" for k, v in sm.items()), "muted")
 
     # ── Telegram bot értesítés sikertelen fogadáskor ──────────────────────────
@@ -242,6 +269,12 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
             msg += f"\nOk: {reason}"
         await _send_notify(msg)
 
+    async def _notify_skipped(tip, reason: str):
+        if not (notify_on_fail and notify_bot_ready):
+            return
+        await _send_notify(f"⚠️ Tipp NEM lett megrakva — {tip.bookmaker_label}\n"
+                           f"{_fmt_tip_line(tip)}\nOk: {reason}")
+
     async def _notify_line_changed(tip):
         if not (notify_on_fail and notify_bot_ready):
             return
@@ -263,11 +296,12 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
     engine_cls = {"tippmixpro": BetEngine, "vegas": VegasEngine}
     engines:   dict = {}
     executors: dict = {}
-    for bm, book in cfg.books.items():
+    for bm, (username, password) in cfg.creds.items():
         label = BOOKMAKER_LABEL[bm]
         log(f"[{label}] Playwright engine indul (Chromium betöltés ~10-20 mp)...", "muted")
         ex  = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        eng = engine_cls[bm](book.username, book.password, book.stake, cfg.dry_run)
+        base = next(s.stake for s in cfg.sources.values() if s.bookmaker == bm)
+        eng = engine_cls[bm](username, password, base, cfg.dry_run)
         try:
             await loop.run_in_executor(ex, eng.start)
         except Exception as e:
@@ -303,12 +337,14 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
     async def handle_tip(tip: ParsedTip, key: str):
         """Egyetlen tipp teljes életciklusa — külön taskban fut."""
         bm    = tip.bookmaker
+        src   = tip.source or bm
+        real  = getattr(tip, "kind", "") == "real"
         tag   = f"[{tip.bookmaker_label}]"
         engine, executor = engines[bm], executors[bm]
         delay = random.uniform(30, 120)   # tippenként külön sorsolva
         # Szoros kezdésnél a várakozás nem csúsztathatja a megrakást a kezdés utánra:
         # legkésőbb TIGHT_KICKOFF_S-mal a kezdés előtt induljon.
-        left = _seconds_to_kickoff(tip.time)
+        left = tip.seconds_to_kickoff() if real else _seconds_to_kickoff(tip.time)
         if left is not None and delay > left - TIGHT_KICKOFF_S:
             delay = max(0.0, left - TIGHT_KICKOFF_S)
             log(f"{tag} Szoros kezdés ({left / 60:.1f} perc múlva) — rövidített várakozás", "info")
@@ -323,8 +359,9 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
 
         mode          = "[DRY RUN] " if cfg.dry_run else ""
         event_retries = 0
-        base_stake    = cfg.books[bm].stake
-        tip_stake     = stake_maps[bm].get(tip.strategy_key, base_stake)
+        base_stake    = cfg.sources[src].stake
+        tip_stake     = stake_maps[src].get(tip.strategy_key, base_stake)
+        place_fn      = engine.place_real if real else engine.place
         if tip_stake != base_stake:
             log(f"  tét ehhez a stratégiához ({tip.strategy_key}): {tip_stake} Ft", "muted")
 
@@ -337,7 +374,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 _status(key, tip, "placing")
                 try:
                     result = await loop.run_in_executor(
-                        executor, lambda: engine.place(tip, tip_stake))
+                        executor, lambda: place_fn(tip, tip_stake))
                 except Exception as e:
                     log(f"{tag} Kivétel a fogadás során: {e}", "error")
                     traceback.print_exc()
@@ -362,6 +399,15 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 _foot("Fogadás sikertelen")
                 _status(key, tip, "fail")
                 await _notify_fail(tip, reason)
+                return
+
+            if result == "skipped":
+                # Real Event: az odds a tipp óta esett / a kimenetelt levették —
+                # szándékosan nem rakjuk meg (nem próbáljuk újra).
+                log(f"{tag} [BET_SKIP] {tip} — {reason}", "warn")
+                _foot("Kihagyva")
+                _status(key, tip, "skipped", "odds esett" if "ODDS" in reason else "levéve")
+                await _notify_skipped(tip, reason)
                 return
 
             if result == "line_changed":
@@ -398,8 +444,11 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         # Dedup kulcs: az üzenet csak időpontot tartalmaz (dátumot nem),
         # ezért a feldolgozás dátumát is beletesszük — így nincs napok közti ütközés.
         today = f"{datetime.now():%Y-%m-%d}"
-        key = (f"{today}|{tip.bookmaker}|{tip.time}|{tip.home_team}|"
-               f"{tip.away_team}|{tip.pick}|{tip.line}")
+        if getattr(tip, "kind", "") == "real":
+            key = f"{today}|real|{tip.bookmaker}|{tip.odds_id}"
+        else:
+            key = (f"{today}|{tip.bookmaker}|{tip.time}|{tip.home_team}|"
+                   f"{tip.away_team}|{tip.pick}|{tip.line}")
         if key in processed:
             return
         processed.add(key)
@@ -416,7 +465,8 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         await start_watcher(
             api_id=cfg.api_id, api_hash=cfg.api_hash, phone=cfg.phone,
             # csak a sikeresen belépett irodák csatornáit figyeljük
-            channels={cfg.books[bm].channel: bm for bm in engines},
+            channels={s.channel: src for src, s in cfg.sources.items()
+                      if s.bookmaker in engines},
             on_tip=on_tip,
             strategy_filter=cfg.strategy, stop_event=stop_event,
             log=log,   # a figyelő eseményei a fő (színes) Naplóra is kerüljenek

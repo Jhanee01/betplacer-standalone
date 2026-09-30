@@ -865,6 +865,129 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Real Event — valódi foci / kézi / kosár meccsek (a dashboard BetPlacer mintájára)
+# ══════════════════════════════════════════════════════════════════════════════
+# A tipp a Tippmixpro meccs-ID-t és a bettingOfferId-t hordozza. A meccsoldal címe
+# .../esemenyek/<sportId>/x/x/x/x/<meccs-ID>/<fül> (a cím többi része nem számít);
+# a gomb data-ubt-label-je = bettingOfferId — fülenként keressük.
+
+# Ennyivel eshet legfeljebb az odds a tippben közölthöz képest (lásd vegas_engine).
+REAL_ODDS_TOLERANCE = 0.03
+
+_TMX_ITEM_JS = """(b) => {
+  const fk = Object.keys(b).find(k => k.startsWith('__reactFiber'));
+  let f = fk && b[fk];
+  for (let i = 0; i < 5 && f; i++, f = f.return) {
+    const it = f.memoizedProps && f.memoizedProps.item;
+    if (it) return {odds: it.odds, suspended: !!it.suspended, removed: !!it.removed};
+  }
+  return null;
+}"""
+
+
+def place_real_tip(page, tip, username: str, password: str,
+                   stake: int, dry_run: bool, out: dict) -> str:
+    """Real Event tipp a Tippmixprón. 'ok' | 'fail' | 'skipped' (odds esett / levették)."""
+    mid, offer = str(tip.event_id), str(tip.odds_id)
+    log(f"Real Event (TippmixPro) tipp: {tip}")
+    sel = f"button.OddsButton[data-ubt-label='{offer}']"
+    for attempt in range(1, 4):
+        if attempt > 1:
+            log(f"  {attempt}. kísérlet...")
+        url = (f"{TIPPMIXPRO_URL}/hu/fogadas/i/esemenyek/{tip.sport_id}/x/x/x/x/"
+               f"{mid}/nepszeru")
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=PAGE_GOTO_TIMEOUT)
+        except Exception as e:
+            log(f"  navigáció hiba: {e}")
+            continue
+        page.wait_for_timeout(2500)
+        if not is_logged_in(page):
+            log("  session kiesett — újra bejelentkezés...")
+            ensure_logged_in(page, username, password)
+            continue
+        fr = find_sports_frame(page)
+        if fr is None:
+            log("  sports iframe nem töltött be!")
+            continue
+        try:
+            fr.wait_for_selector("button.OddsButton", timeout=25000)
+        except PWTimeout:
+            out["error"] = "a meccs már nincs kiírva (levették / elkezdődött)"
+            screenshot(page, "real_tmx_meccs_nincs")
+            log(f"  {out['error']}")
+            return "skipped"
+        if not clear_betslip(page, fr):
+            continue
+
+        # A gomb a bettingOfferId alapján — ha a Népszerű fülön nincs, végig a füleken
+        btn = fr.locator(sel).first
+        if btn.count() == 0:
+            fulek = fr.evaluate(
+                "(mid) => [...new Set([...document.querySelectorAll('a[href]')]"
+                ".map(a => a.getAttribute('href')).filter(h => h.includes('/' + mid + '/')))]", mid)
+            for href in fulek:
+                if href.rstrip("/").endswith("/nepszeru"):
+                    continue
+                try:
+                    human_click(page, fr.locator(f"a[href='{href}']").first)
+                    fr.wait_for_timeout(random.randint(1500, 2500))
+                except Exception:
+                    continue
+                btn = fr.locator(sel).first
+                if btn.count() > 0:
+                    log(f"  a kimenetel a(z) '{href.rstrip('/').split('/')[-1]}' fülön")
+                    break
+        if btn.count() == 0:
+            out["error"] = "a kimenetel nem található a meccsoldalon (levették?)"
+            screenshot(page, "real_tmx_kimenetel_nincs")
+            log(f"  {out['error']}")
+            return "skipped"
+
+        info = btn.evaluate(_TMX_ITEM_JS) or {}
+        if info.get("removed"):
+            out["error"] = "a kimenetel levéve"
+            log(f"  {out['error']}")
+            return "skipped"
+        if info.get("suspended") or not info.get("odds"):
+            log("  a kimenetel most felfüggesztve — újrapróbálás")
+            page.wait_for_timeout(random.randint(8000, 15000))
+            continue
+        price = float(info["odds"])
+        if price < float(tip.odds) * (1 - REAL_ODDS_TOLERANCE):
+            out["error"] = f"ODDS ESETT: tipp {tip.odds} → most {price:.2f} — fogadás kihagyva"
+            log(f"  {out['error']}")
+            return "skipped"
+        log(f"  {tip.piac} — {tip.pick} @ {price} → kattintás")
+        human_click(page, btn)
+
+        ctx = wait_for_betslip(page, frame=fr, timeout_s=12)
+        if ctx is None:
+            screenshot(page, f"real_tmx_szelveny_nincs_{attempt}")
+            ensure_logged_in(page, username, password)
+            continue
+        if _slip_item_count([fr, page]) > 1:
+            log("  a szelvényen több tétel van (csak 1 lehet) — újrapróba")
+            continue
+        try:
+            ensure_real_tab(ctx)
+            fill_stake(page, ctx, stake)
+            if not confirm_bet(page, ctx, dry_run=dry_run):
+                continue
+            if dry_run:
+                clear_betslip(page, fr)
+                return "ok"
+            if detect_bet_result(page, ctx):
+                return "ok"
+            log("  fogadás nem sikerült, újrapróbálás...")
+        except Exception as e:
+            log(f"  szelvény hiba: {e}")
+            screenshot(page, f"real_tmx_szelveny_hiba_{attempt}")
+    log(f"  3 kísérlet után sem sikerült: {tip}")
+    return "fail"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # BetEngine osztály (long-running, browser stays open between bets)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -964,6 +1087,31 @@ class BetEngine:
         finally:
             # A következő tippig (ami órák múlva jöhet) ne maradjon nyitva az
             # élő listaoldal — parkolunk, néha pedig friss lapot nyitunk.
+            self._placed += 1
+            _park(self._page)
+            if self._placed % BETS_PER_PAGE_RECYCLE == 0:
+                self._recycle_page()
+
+    def place_real(self, tip, stake: int = None) -> str:
+        """Real Event tipp. Visszatérés: 'ok' | 'fail' | 'skipped'."""
+        self.last_error = self.last_bet_ref = ""
+        if self._page is None:
+            return "fail"
+        out: dict = {}
+        try:
+            return place_real_tip(self._page, tip, self._username, self._password,
+                                  self._stake if stake is None else int(stake),
+                                  self._dry_run, out)
+        except Exception as exc:
+            log(f"  kivétel: {exc}")
+            out.setdefault("error", f"kivétel: {exc}")
+            try:
+                ensure_logged_in(self._page, self._username, self._password)
+            except Exception:
+                pass
+            return "fail"
+        finally:
+            self.last_error = out.get("error", "")
             self._placed += 1
             _park(self._page)
             if self._placed % BETS_PER_PAGE_RECYCLE == 0:

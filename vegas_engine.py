@@ -131,13 +131,46 @@ def is_logged_in(page) -> bool:
         return False
 
 
+def _accept_terms(page) -> bool:
+    """A frissített „Részvételi Szabályzat" elfogadása (a felhasználó kérésére
+    automatikusan, 2026-09-30). Belépéskor felugró ablak; amíg nincs elfogadva, a
+    belépés nem fejeződik be. CSAK akkor kattint, ha ugyanabban az ablakban van a
+    „Frissült a Részvételi Szabályzat" szöveg ÉS az „Elfogadás" gomb (más ablak —
+    pl. süti — gombját így sosem nyomja meg). Naplóz + Telegram-értesítést küld."""
+    try:
+        doboz = page.locator("div:has-text('Frissült a Részvételi Szabályzat') >> visible=true")
+        if doboz.count() == 0:
+            return False
+        btn = doboz.last.get_by_role("button", name=re.compile(r"^\s*Elfogadás\s*$", re.I))
+        if btn.count() == 0 or not btn.first.is_visible():
+            return False
+        human_click(page, btn.first)
+        page.wait_for_timeout(1500)
+        log("  Vegas: a frissített Részvételi Szabályzat automatikusan ELFOGADVA")
+        screenshot(page, "vegas_szabalyzat_elfogadva")
+        try:
+            import os
+            import notifier
+            tok, chat = os.getenv("NOTIFY_BOT_TOKEN", ""), os.getenv("NOTIFY_CHAT_ID", "")
+            if tok and chat:
+                notifier.send_message(tok, chat, "ℹ️ Vegas: a BetPlacer elfogadta a frissített "
+                                      "Részvételi Szabályzatot. Érdemes elolvasni: vegas.hu")
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        log(f"  Vegas szabályzat-ablak kezelése sikertelen: {e}")
+        return False
+
+
 def _dismiss_cookie(page):
     """Cookie-ablak elvetése a legszűkebb opcióval (csak a nélkülözhetetlen sütik).
     Az ablak eltakarja a gombokat; az 'elutasítás' gombja a nyitó nézetben rejtett,
     ezért a Cookiebot saját API-ján adjuk meg ugyanezt. A döntés a contextben megmarad.
     Emellett a 60 percenként felugró „Emlékeztető” (felelős játék) ablakot is bezárja a
     „Tovább játszom” gombbal — különben az ablak eltakarja az odds-gombot és a szelvény
-    nem nyílik meg."""
+    nem nyílik meg. A frissített Részvételi Szabályzat ablakát elfogadja (_accept_terms)."""
+    _accept_terms(page)
     try:
         cont = page.get_by_role("button", name=re.compile(r"Tovább játszom", re.I))
         if cont.count() > 0 and cont.first.is_visible():
@@ -183,6 +216,8 @@ def _login_once(page, username: str, password: str):
     human_click(page, page.locator("button[class*='login__button']").first)
     log("  login elküldve, várakozás...")
     page.wait_for_timeout(5000)
+    if _accept_terms(page):          # a szabályzat-ablak a belépés után ugrik fel
+        page.wait_for_timeout(2000)
     screenshot(page, "vegas_login_utan")
 
 
@@ -386,6 +421,197 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Real Event — valódi foci / kézi / kosár meccsek (a dashboard BetPlacer mintájára)
+# ══════════════════════════════════════════════════════════════════════════════
+# A tipp az Altenar event-ID-t és odd-ID-t hordozza. A meccsoldal címe a nevekből
+# képzett slug; a vegas.hu resolve-végpontja igazolja, hogy PONTOSAN erre az
+# event-ID-re mutat (különben nem fogadunk). A csukott piacot a fejlécére kattintva
+# nyitjuk ki (emberi egérmozgással).
+
+_DETAILS_URL = "https://hu-sb2frontend-altenar2.biahosted.com/api/widget/GetEventDetails"
+_RESOLVE_URL = "https://vegas.hu/altenarSEO/resolve?path="
+_AKTIV = 0                 # oddStatus: 0 = fogadható
+# Ennyivel eshet legfeljebb az odds a tippben közölthöz képest (a fair ár nincs az
+# üzenetben; az edge-küszöb 5% EV, így kis esés még value marad).
+REAL_ODDS_TOLERANCE = 0.03
+
+_EXPAND_MARKET_JS = """(nev) => {
+  function* walk(r){ for (const e of r.querySelectorAll('*')) { yield e; if (e.shadowRoot) yield* walk(e.shadowRoot); } }
+  for (const h of walk(document)) {
+    const c = (h.className || '').toString();
+    if (/EventDetailsMarketHeader-/.test(c) && (h.innerText || '').split('\\n')[0].trim() === nev) {
+      h.scrollIntoView({block: 'center'}); h.setAttribute('data-fbp-market', '1'); return true;
+    }
+  }
+  return false;
+}"""
+
+
+def _get_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers=_API_HEADERS)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = resp.read()
+        if resp.headers.get("Content-Encoding", "").lower() == "gzip":
+            body = gzip.decompress(body)
+        return json.loads(body.decode("utf-8"))
+
+
+def _event_details(event_id: str) -> dict:
+    p = {k: v for k, v in _API_PARAMS.items() if k not in ("eventType", "sportId")}
+    p["eventId"] = event_id
+    return _get_json(f"{_DETAILS_URL}?{urllib.parse.urlencode(p)}")
+
+
+def _slug_hu(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+
+
+def _event_path(raw: dict) -> str | None:
+    """A meccsoldal címe, a resolve-végponttal igazolva (None: nem azonosítható)."""
+    comp = raw.get("competitors") or []
+    nevek = [f"{comp[0]['name']} vs {comp[1]['name']}"] if len(comp) >= 2 else []
+    nevek.append(raw.get("name") or "")
+    for nev in nevek:
+        path = "/sports/%s/%s/%s/%s" % (_slug_hu(raw["sport"]["name"]),
+                                        _slug_hu(raw["category"]["name"]),
+                                        _slug_hu(raw["champ"]["name"]), _slug_hu(nev))
+        try:
+            req = urllib.request.Request(_RESOLVE_URL + urllib.parse.quote(path),
+                                         headers={"User-Agent": _API_HEADERS["User-Agent"]})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                res = json.loads(r.read().decode("utf-8"))
+        except Exception as e:
+            log(f"  Vegas resolve hiba: {e}")
+            continue
+        if str((res.get("params") or {}).get("eventId")) == str(raw.get("id")):
+            return path
+    return None
+
+
+def place_real_tip(page, tip, username: str, password: str,
+                   stake: int, dry_run: bool, out: dict) -> str:
+    """Real Event tipp a Vegason. 'ok' | 'fail' | 'skipped' (odds esett / levették)."""
+    eid, oid = int(tip.event_id), int(tip.odds_id)
+    log(f"Real Event (Vegas) tipp: {tip}")
+    for attempt in range(1, 4):
+        if attempt > 1:
+            log(f"  {attempt}. kísérlet...")
+        try:
+            raw = _event_details(eid)
+        except Exception as e:
+            log(f"  Vegas API hiba: {e}")
+            time.sleep(_rand_ms(2000, 4000))
+            continue
+        odd = next((o for o in raw.get("odds", []) if o.get("id") == oid), None)
+        if odd is None:
+            out["error"] = "a kimenetel már nincs kiírva (levették / elkezdődött)"
+            log(f"  {out['error']}")
+            return "skipped"
+        if odd.get("oddStatus") != _AKTIV or not odd.get("price"):
+            log("  a kimenetel most felfüggesztve — újrapróbálás")
+            page.wait_for_timeout(random.randint(8000, 15000))
+            continue
+        price = float(odd["price"])
+        if price < float(tip.odds) * (1 - REAL_ODDS_TOLERANCE):
+            out["error"] = (f"ODDS ESETT: tipp {tip.odds} → most {price:.2f} — "
+                            f"fogadás kihagyva")
+            log(f"  {out['error']}")
+            return "skipped"
+        piacnev = next((m.get("name") for m in raw.get("markets", [])
+                        if oid in [i for sor in (m.get("desktopOddIds") or []) for i in sor]
+                        or oid in (m.get("oddIds") or [])), None)
+
+        path = _event_path(raw)
+        if not path:
+            out["error"] = "a meccsoldal címe nem azonosítható biztosan"
+            log(f"  {out['error']}")
+            return "fail"
+        try:
+            page.goto("https://vegas.hu" + path, wait_until="domcontentloaded",
+                      timeout=PAGE_GOTO_TIMEOUT)
+            page.wait_for_selector("button[class*='OddBoxButton']", timeout=30000)
+        except Exception as e:
+            log(f"  navigáció hiba: {e}")
+            screenshot(page, f"real_vegas_nav_hiba_{attempt}")
+            continue
+        page.wait_for_timeout(random.randint(1500, 3000))
+        _dismiss_cookie(page)
+        if not is_logged_in(page):
+            log("  Vegas session kiesett — újra bejelentkezés...")
+            ensure_logged_in(page, username, password)
+            continue
+
+        _clear_slip(page)
+        found = page.evaluate(_MARK_ODD_JS, oid)
+        if not found and piacnev and page.evaluate(_EXPAND_MARKET_JS, piacnev):
+            page.wait_for_timeout(random.randint(400, 900))
+            human_click(page, page.locator("[data-fbp-market='1']").first)
+            log(f"  piac kinyitva: {piacnev}")
+            page.wait_for_timeout(random.randint(1000, 1800))
+            found = _find_odd(page, oid)
+        if not found:
+            log(f"  odds-gomb nem található az oldalon (odd {oid}, piac {piacnev})")
+            screenshot(page, f"real_vegas_odds_nem_talalt_{attempt}")
+            continue
+        log(f"  {tip.piac} — {found['name']} @ {found['price']} → kattintás")
+        human_click(page, page.locator(f"[data-fbp-odd='{oid}']").first)
+
+        try:
+            page.wait_for_selector(f"{_STAKE_SEL} >> visible=true", timeout=12000)
+        except PWTimeout:
+            log("  szelvény nem jelent meg")
+            screenshot(page, f"real_vegas_szelveny_nincs_{attempt}")
+            continue
+        if page.locator(f"{_STAKE_SEL} >> visible=true").count() != 1:
+            log("  a szelvényen nem pontosan egy kiválasztás van — kiürítés és újra")
+            _clear_slip(page)
+            continue
+        inp = page.locator(f"{_STAKE_SEL} >> visible=true").first
+        human_click(page, inp)
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Delete")
+        page.wait_for_timeout(200)
+        page.keyboard.type(str(stake), delay=random.randint(60, 100))
+        page.wait_for_timeout(random.randint(600, 1200))
+        log(f"  tét beírva: {stake} Ft")
+        screenshot(page, "real_vegas_fogadas_elott")
+        if dry_run:
+            log("  [DRY RUN] fogadás kihagyva")
+            _clear_slip(page)
+            return "ok"
+        fogad = page.locator(f"{_PLACE_SEL} >> visible=true").first
+        if fogad.count() == 0:
+            log("  Fogadok gomb nem található!")
+            screenshot(page, "real_vegas_fogad_gomb_nincs")
+            continue
+        _dismiss_cookie(page)
+        before = _slip_text(page)
+        log("  Fogadok gomb kattintás")
+        human_click(page, fogad)
+        ok, text = _detect_result(page, before)
+        screenshot(page, "real_vegas_fogadas_utan")
+        short = " ".join(text.split())[:200]
+        if ok is False:
+            out["error"] = f"a Vegas elutasította: {short}"
+            log(f"  {out['error']}")
+            _clear_slip(page)
+            return "fail"
+        if ok is None:
+            log(f"  eredmény nem egyértelmű, megrakottnak vesszük: {short}")
+            out["bet_ref"] = "nem egyértelmű — ellenőrizd a Vegason!"
+        else:
+            m = re.search(r"\bID\s*(\d{6,})", text)
+            if m:
+                out["bet_ref"] = m.group(1)
+            log(f"  fogadás sikeresen leadva (szelvény ID: {out.get('bet_ref', '?')})")
+        return "ok"
+    log(f"  3 kísérlet után sem sikerült: {tip}")
+    return "fail"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # VegasEngine — ugyanaz a felület, mint a BetEngine (start / stop / place)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -435,6 +661,25 @@ class VegasEngine:
             return place_tip(self._page, tip, self._username, self._password,
                              self._stake if stake is None else int(stake),
                              self._dry_run, out)
+        except Exception as exc:
+            log(f"  kivétel: {exc}")
+            out.setdefault("error", f"kivétel: {exc}")
+            return "fail"
+        finally:
+            self.last_error   = out.get("error", "")
+            self.last_bet_ref = out.get("bet_ref", "")
+            _park(self._page)
+
+    def place_real(self, tip, stake: int = None) -> str:
+        """Real Event tipp. Visszatérés: 'ok' | 'fail' | 'skipped'."""
+        self.last_error = self.last_bet_ref = ""
+        if self._page is None:
+            return "fail"
+        out: dict = {}
+        try:
+            return place_real_tip(self._page, tip, self._username, self._password,
+                                  self._stake if stake is None else int(stake),
+                                  self._dry_run, out)
         except Exception as exc:
             log(f"  kivétel: {exc}")
             out.setdefault("error", f"kivétel: {exc}")

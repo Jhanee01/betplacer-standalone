@@ -12,7 +12,12 @@ import secrets
 from paths import APP_DIR
 
 # Klasszikus semver. Minden kiadás előtt EZT kell emelni (lásd make_release.bat).
-APP_VERSION = "3.0.1"
+APP_VERSION = "4.0.0"
+
+# Real Event (valódi foci/kézi/kosár tippek) — egyelőre HASZNÁLATON KÍVÜL: a menüpont
+# látszik, de a lapja szürke (Indítás, kapcsolók, tétek), és a core sem figyeli a
+# Real Event csatornákat. Élesítés: True.
+REAL_EVENT_ENABLED = False
 
 # GitHub repó, ahonnan a frissítés jön (owner/repo). Publikus → token nem kell.
 GITHUB_UPDATE_OWNER = "Jhanee01"

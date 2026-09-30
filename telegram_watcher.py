@@ -13,7 +13,8 @@ from telethon import TelegramClient, events
 from telethon.tl.types import PeerChannel
 from telethon.utils import get_peer_id
 
-from tip_parser import parse_tip, ParsedTip, BOOKMAKER_LABEL
+from tip_parser import parse_tip, ParsedTip, BOOKMAKER_LABEL, SOURCE_LABEL
+from real_tip import parse_real_tip
 from paths import APP_DIR
 
 SESSION_FILE = str(APP_DIR / "telegram_session")
@@ -32,7 +33,8 @@ async def start_watcher(
     api_id:   int,
     api_hash: str,
     phone:    str,
-    channels: dict,   # {csatorna (int ID vagy @név): iroda ("tippmixpro" | "vegas")}
+    channels: dict,   # {csatorna (int ID vagy @név): forrás ("tippmixpro" | "vegas" |
+                      #   "real_tippmixpro" | "real_vegas")}
     on_tip,           # callable(tip: ParsedTip) — szinkron, gyorsan visszatér
     strategy_filter: str = "",
     stop_event=None,  # threading.Event — ha beállítják, gracefully lekapcsol
@@ -76,7 +78,7 @@ async def start_watcher(
         await client.disconnect()
         return
     emit("Csatlakozva. Figyelt csatorna: " + ", ".join(
-        f"{ch} ({BOOKMAKER_LABEL.get(bm, bm)})" for ch, bm in channels.items()), "ok")
+        f"{ch} ({SOURCE_LABEL.get(bm, bm)})" for ch, bm in channels.items()), "ok")
 
     # KRITIKUS: get_dialogs() MINDIG, csatlakozás után.
     # Két dolgot old meg egyszerre:
@@ -100,7 +102,7 @@ async def start_watcher(
     by_chat: dict = {}     # peer chat_id → iroda
     entities = []
     for channel, bookmaker in channels.items():
-        label = BOOKMAKER_LABEL.get(bookmaker, bookmaker)
+        label = SOURCE_LABEL.get(bookmaker, bookmaker)
         try:
             entity = await client.get_entity(channel)
         except Exception as e:
@@ -126,14 +128,19 @@ async def start_watcher(
         # formázást (pl. **Pick:**), ami elrontja a parser pick-regexét → a tipp
         # tévesen „nem tipp-formátum"-ként kihullana. Fallback a .text-re.
         text = event.message.raw_text or event.message.text or ""
-        bookmaker = by_chat.get(event.chat_id, "tippmixpro")
-        label = BOOKMAKER_LABEL.get(bookmaker, bookmaker)
+        source = by_chat.get(event.chat_id, "tippmixpro")
+        real = source.startswith("real_")
+        bookmaker = source[len("real_"):] if real else source
+        label = SOURCE_LABEL.get(source, source)
         stats["msgs"]    += 1
         stats["last_msg"] = datetime.now().strftime("%H:%M:%S")
         preview = " ".join(text.split())[:80] or "(nincs szöveg)"
         emit(f"[{label}] Üzenet érkezett: {preview}", "info")
 
-        tip = parse_tip(text)
+        # Real Event csatornán a Real Event formátum (esemény- és odds-ID), máshol a FIFA
+        tip = parse_real_tip(text) if real else parse_tip(text)
+        if tip is not None:
+            tip.source = source
         if tip is None:
             stats["skipped"] += 1
             emit("  → nem tipp-formátum, kihagyva.", "muted")
@@ -145,7 +152,7 @@ async def start_watcher(
                  f"kihagyva (más iroda szorzójára szól).", "warn")
             return
 
-        if strategy_filter and strategy_filter.lower() not in tip.strategy.lower():
+        if not real and strategy_filter and strategy_filter.lower() not in tip.strategy.lower():
             stats["skipped"] += 1
             emit(f"  → stratégia-szűrő kizárta: {tip.strategy}", "muted")
             return

@@ -42,6 +42,8 @@ from typing import Optional
 
 
 BOOKMAKER_LABEL = {"tippmixpro": "TippmixPro", "vegas": "Vegas"}
+# Forrás (figyelt csatorna) megjelenített neve — FIFA-irodák + Real Event csatornák
+SOURCE_LABEL = {**BOOKMAKER_LABEL, "real_tippmixpro": "Real TippmixPro", "real_vegas": "Real Vegas"}
 
 
 @dataclass
@@ -59,6 +61,7 @@ class ParsedTip:
     bookmaker:  str = "tippmixpro"  # "tippmixpro" | "vegas" — a `Bookmaker:` sorból
                                     # (hiányában tippmixpro); indításkor a csatorna
                                     # irodájával vetjük össze
+    source:     str = ""        # a figyelt csatorna forrása (a figyelő tölti)
 
     @property
     def home_clean(self) -> str:

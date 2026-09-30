@@ -27,7 +27,15 @@ KNOWN_STRATEGIES = [
     "Team Running 8min", "Team Running 12min",
 ]
 
-BOOKMAKERS = ("tippmixpro", "vegas")
+# Tét-források: a két FIFA-iroda + a két Real Event csatorna (v3.1.0). A Real Event
+# kulcsok "real_vegas|" / "real_tippmixpro|" előtagot kapnak ugyanebben a fájlban.
+BOOKMAKERS = ("tippmixpro", "vegas", "real_tippmixpro", "real_vegas")
+REAL_STRATEGY = "Real Event"      # a Real Event tipp stratégia-kulcsa (RealTip.strategy_key)
+
+
+def known_strategies(bookmaker: str) -> list:
+    """A tét-táblázat előtöltése forrásonként."""
+    return [REAL_STRATEGY] if bookmaker.startswith("real_") else list(KNOWN_STRATEGIES)
 
 
 def _prefix(bookmaker: str) -> str:
