@@ -12,7 +12,7 @@ import secrets
 from paths import APP_DIR
 
 # Klasszikus semver. Minden kiadás előtt EZT kell emelni (lásd make_release.bat).
-APP_VERSION = "4.0.0"
+APP_VERSION = "4.0.1"
 
 # Real Event (valódi foci/kézi/kosár tippek) — egyelőre HASZNÁLATON KÍVÜL: a menüpont
 # látszik, de a lapja szürke (Indítás, kapcsolók, tétek), és a core sem figyeli a

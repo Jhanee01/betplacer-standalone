@@ -179,7 +179,19 @@ def human_click(page, locator):
             time.sleep(_rand_ms(15, 40))
         page.mouse.move(tx, ty)
         time.sleep(_rand_ms(300, 700))
-        page.mouse.click(tx, ty)
+        # Az egérmozgás alatt a lista átrendeződhet (induló meccs kiesik) — ilyenkor a
+        # régi koordinátán MÁS gomb van (2026-10-02: Boca–Racing O7.5 helyett a
+        # Benfica–Sporting O4.5 került fel). Újramérés; ha elmozdult, elem-alapú kattintás.
+        try:
+            box2 = locator.bounding_box(timeout=1500)
+        except Exception:
+            box2 = None
+        if box2 and (box2["x"] <= tx <= box2["x"] + box2["width"]
+                     and box2["y"] <= ty <= box2["y"] + box2["height"]):
+            page.mouse.click(tx, ty)
+        else:
+            log("  [human_click] az elem elmozdult kattintás előtt — elem-alapú kattintás")
+            locator.click(timeout=5000)
     else:
         locator.click(timeout=5000)
     time.sleep(_rand_ms(200, 500))
@@ -644,6 +656,37 @@ def _click_first_visible(ctx, selectors, within=None) -> bool:
     return False
 
 
+def _slip_text(contexts) -> str:
+    for ctx in contexts:
+        for sel in ("div[class*='BetslipSelection']", "div[class*='Betslip']"):
+            try:
+                txt = " ".join(ctx.locator(sel).all_inner_texts()).strip()
+                if txt:
+                    return txt
+            except Exception:
+                pass
+    return ""
+
+
+def slip_mismatch(contexts, tip: ParsedTip):
+    """A szelvényen a TIPP meccse (és O/U-nál a gólvonala) van-e.
+    None, ha egyezik; különben az eltérés leírása (ilyenkor tilos megrakni)."""
+    txt = _slip_text(contexts)
+    if not txt:
+        return "a szelvény szövege nem olvasható"
+    low = " ".join(txt.split()).lower()
+    hiany = [full for full, clean in ((tip.home_team, tip.home_clean),
+                                      (tip.away_team, tip.away_clean))
+             if full and not (_team_in_text(low, full) or _team_in_text(low, clean))]
+    if hiany:
+        return f"más meccs a szelvényen (hiányzik: {', '.join(hiany)}) — szelvény: {low[:160]}"
+    if (tip.market or "OU").upper() == "OU" and tip.line is not None:
+        esc = re.escape(f"{float(tip.line):g}").replace(r"\.", "[.,]")
+        if not re.search(rf"(?<![\d.,]){esc}(?![\d.,])", txt):
+            return f"más gólvonal a szelvényen (tipp: {tip.line}) — szelvény: {low[:160]}"
+    return None
+
+
 def clear_betslip(page, frame) -> bool:
     """Kiüríti a szelvényt. True, ha üres (vagy nem látunk rajta semmit)."""
     contexts = [c for c in [frame, page] if c is not None]
@@ -843,6 +886,14 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
         if n_items > 1:
             log(f"  a szelvényen {n_items} tétel van (csak 1 lehet) — nem rakjuk, újrapróba")
             screenshot(page, f"tobb_tetel_kiserlet{attempt}")
+            continue
+
+        # Szelvény-őr: a tipp meccse került-e fel (rossz gombra kattintás ellen)
+        elteres = slip_mismatch([fr, page], tip)
+        if elteres:
+            log(f"  SZELVÉNY-ŐR: {elteres} — kiürítés, nem rakjuk meg")
+            screenshot(page, f"szelveny_eltero_kiserlet{attempt}")
+            clear_betslip(page, fr)
             continue
 
         try:
