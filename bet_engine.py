@@ -670,14 +670,22 @@ def _slip_text(contexts) -> str:
 
 def slip_mismatch(contexts, tip: ParsedTip):
     """A szelvényen a TIPP meccse (és O/U-nál a gólvonala) van-e.
-    None, ha egyezik; különben az eltérés leírása (ilyenkor tilos megrakni)."""
-    txt = _slip_text(contexts)
+    None, ha egyezik; különben az eltérés leírása (ilyenkor tilos megrakni).
+    A szelvény a kattintás után még tölthet (szürke helykitöltő, csak a fejléc
+    olvasható) — ezért legfeljebb 8 mp-ig újraolvassuk, amíg a csapatnevek
+    megjelennek; különben a jó szelvényt is eldobná (2026-10-03, Atleti–Barcelona)."""
+    deadline = time.time() + 8
+    while True:
+        txt = _slip_text(contexts)
+        low = " ".join(txt.split()).lower()
+        hiany = [full for full, clean in ((tip.home_team, tip.home_clean),
+                                          (tip.away_team, tip.away_clean))
+                 if full and not (_team_in_text(low, full) or _team_in_text(low, clean))]
+        if (txt and not hiany) or time.time() >= deadline:
+            break
+        time.sleep(0.5)
     if not txt:
         return "a szelvény szövege nem olvasható"
-    low = " ".join(txt.split()).lower()
-    hiany = [full for full, clean in ((tip.home_team, tip.home_clean),
-                                      (tip.away_team, tip.away_clean))
-             if full and not (_team_in_text(low, full) or _team_in_text(low, clean))]
     if hiany:
         return f"más meccs a szelvényen (hiányzik: {', '.join(hiany)}) — szelvény: {low[:160]}"
     if (tip.market or "OU").upper() == "OU" and tip.line is not None:
@@ -747,16 +755,30 @@ def fill_stake(page, ctx, stake: int):
         inp = ctx.locator("input[name^='stake.']").first
     if inp.count() == 0:
         raise RuntimeError("Tet input nem talalhato!")
-    human_click(page, inp)
-    page.wait_for_timeout(300)
-    page.keyboard.press("Control+A")
-    page.keyboard.press("Delete")
-    page.wait_for_timeout(200)
-    page.keyboard.type(str(stake), delay=random.randint(60, 100))
-    page.wait_for_timeout(300)
-    page.keyboard.press("Escape")
-    page.wait_for_timeout(500)
-    log(f"  tet beirva: {stake} Ft")
+    # Ellenőrzött beírás: a TMX időnként a teljes oldalt eltakaró töltőképernyőt
+    # (logó) mutat — ilyenkor a gépelés a takaróra megy, a mező 0 marad és a Fogadok
+    # gomb inaktív (2026-10-03). Ilyenkor várunk és újra beírjuk (max 5 próba).
+    for probe in range(5):
+        if probe:
+            page.wait_for_timeout(3000)
+        human_click(page, inp)
+        page.wait_for_timeout(300)
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Delete")
+        page.wait_for_timeout(200)
+        page.keyboard.type(str(stake), delay=random.randint(60, 100))
+        page.wait_for_timeout(300)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+        try:
+            got = re.sub(r"\D", "", inp.input_value(timeout=2000))
+        except Exception:
+            got = ""
+        if got and int(got) in (stake, stake * 100):   # „2000” vagy „2000,00”
+            log(f"  tet beirva: {stake} Ft")
+            return
+        log(f"  a tét nem íródott be (mező: {got or 'üres'}) — töltőképernyő? várunk és újra")
+    raise RuntimeError(f"a tét ({stake} Ft) nem íródott be a szelvénybe")
 
 
 def confirm_bet(page, ctx, dry_run: bool) -> bool:

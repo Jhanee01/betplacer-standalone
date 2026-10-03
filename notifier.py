@@ -10,6 +10,7 @@ Csak az stdlib-et használja (urllib) — nincs extra függőség.
 """
 
 import json
+import time
 import urllib.parse
 import urllib.request
 
@@ -56,8 +57,12 @@ def detect_chat_id(token: str):
 
 def send_message(token: str, chat_id, text: str) -> bool:
     """Üzenet küldése a boton keresztül. True, ha sikerült."""
-    try:
-        r = _call(token, "sendMessage", {"chat_id": chat_id, "text": text})
-        return bool(r.get("ok"))
-    except Exception:
-        return False
+    # Átmeneti hálózati hiba („timed out”) esetén még kétszer megpróbáljuk.
+    for probe in range(3):
+        try:
+            r = _call(token, "sendMessage", {"chat_id": chat_id, "text": text}, timeout=10)
+            return bool(r.get("ok"))
+        except Exception:
+            if probe < 2:
+                time.sleep(3)
+    return False
