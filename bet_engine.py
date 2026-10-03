@@ -668,6 +668,17 @@ def _slip_text(contexts) -> str:
     return ""
 
 
+def _nev_a_szelvenyen(low: str, full: str, clean: str) -> bool:
+    """A tipp egyik oldala a szelvényen van-e. Ha a tippben van játékos („Man City
+    (chevare)”), a JÁTÉKOST keressük zárójelben — a csapatnév a tippben rövidített
+    lehet („Man City”), a szelvényen teljes („Manchester City”): 2026-10-03-án emiatt
+    dobta el a jó szelvényt. Játékos nélkül a csapatnév dönt."""
+    m = re.search(r"\(([^)]+)\)", full or "")
+    if m:
+        return "(" + " ".join(m.group(1).split()).lower() + ")" in low
+    return _team_in_text(low, full) or _team_in_text(low, clean)
+
+
 def slip_mismatch(contexts, tip: ParsedTip):
     """A szelvényen a TIPP meccse (és O/U-nál a gólvonala) van-e.
     None, ha egyezik; különben az eltérés leírása (ilyenkor tilos megrakni).
@@ -680,7 +691,7 @@ def slip_mismatch(contexts, tip: ParsedTip):
         low = " ".join(txt.split()).lower()
         hiany = [full for full, clean in ((tip.home_team, tip.home_clean),
                                           (tip.away_team, tip.away_clean))
-                 if full and not (_team_in_text(low, full) or _team_in_text(low, clean))]
+                 if full and not _nev_a_szelvenyen(low, full, clean)]
         if (txt and not hiany) or time.time() >= deadline:
             break
         time.sleep(0.5)
