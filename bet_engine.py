@@ -679,6 +679,28 @@ def _nev_a_szelvenyen(low: str, full: str, clean: str) -> bool:
     return _team_in_text(low, full) or _team_in_text(low, clean)
 
 
+_LEET = str.maketrans("013457", "oieast")
+NEV_HASONLOSAG = 0.75   # mért: Bomb1to~Bombi1t0 0.93; két különböző játékos jellemzően <0.5
+
+
+def _nev_kulcs(s: str) -> str:
+    """Csak betű/szám, kisbetű, a számjegy-betű cserék kiegyenlítve (0->o, 1->i ...)."""
+    return re.sub(r"[^0-9a-z]", "", str(s).lower()).translate(_LEET)
+
+
+def _hasonlo_jatekos(low: str, full: str) -> bool:
+    """A tipp játékosa (zárójelben) hasonlít-e a szelvény valamelyik zárójeles nevéhez."""
+    from difflib import SequenceMatcher
+    m = re.search(r"\(([^)]+)\)", full or "")
+    if not m:
+        return False
+    k = _nev_kulcs(m.group(1))
+    if len(k) < 4:
+        return False
+    return any(SequenceMatcher(None, k, _nev_kulcs(j)).ratio() >= NEV_HASONLOSAG
+               for j in re.findall(r"\(([^)]+)\)", low))
+
+
 def slip_mismatch(contexts, tip: ParsedTip):
     """A szelvényen a TIPP meccse (és O/U-nál a gólvonala) van-e.
     None, ha egyezik; különben az eltérés leírása (ilyenkor tilos megrakni).
@@ -692,6 +714,12 @@ def slip_mismatch(contexts, tip: ParsedTip):
         hiany = [full for full, clean in ((tip.home_team, tip.home_clean),
                                           (tip.away_team, tip.away_clean))
                  if full and not _nev_a_szelvenyen(low, full, clean)]
+        # Elírás-tűrés: ha az egyik oldal pontosan megvan, a másik játékosa elég, ha
+        # nagyon hasonlít (2026-10-06: tipp „Bomb1to”, TippmixPro „Bombi1t0” -> eldobta).
+        if (txt and len(hiany) == 1 and tip.home_team and tip.away_team
+                and _hasonlo_jatekos(low, hiany[0])):
+            log(f"  szelvény-őr: '{hiany[0]}' elírással elfogadva")
+            hiany = []
         if (txt and not hiany) or time.time() >= deadline:
             break
         time.sleep(0.5)
