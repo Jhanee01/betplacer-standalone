@@ -304,6 +304,10 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
         out["error"] = "Vegas: a tippben nincs Event ID"
         return "fail"
 
+    # Az utolsó kísérlet kudarcának fajtája: ha a meccs / odds-gomb nem volt az oldalon,
+    # "notfound" — a hívó később újrapróbálja (2026-10-10: a 6 órával előre kiadott
+    # 22:58-as tipp gombja még nem volt a liga-oldalon, később elsőre ment).
+    last = "fail"
     for attempt in range(1, 4):
         if attempt > 1:
             log(f"  {attempt}. kísérlet...")
@@ -316,9 +320,9 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
             time.sleep(_rand_ms(2000, 4000))
             continue
         if info is None:
-            out["error"] = "a meccs már nincs kiírva a Vegason (elkezdődött / levették)"
+            out["error"] = "a meccs nincs kiírva a Vegason (még nem / már nem)"
             log(f"  {out['error']}")
-            return "fail"
+            return "notfound"
         if info["line"] is None:
             out["error"] = "nincs gól alatt/felett piac a meccsen"
             log(f"  {out['error']}")
@@ -340,12 +344,14 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
         except Exception as e:
             log(f"  navigáció hiba: {e}")
             screenshot(page, f"vegas_nav_hiba_{attempt}")
+            last = "fail"
             continue
         page.wait_for_timeout(random.randint(1500, 3000))
         _dismiss_cookie(page)
         if not is_logged_in(page):
             log("  Vegas session kiesett — újra bejelentkezés...")
             ensure_logged_in(page, username, password)
+            last = "fail"
             continue
 
         # 3. Tiszta szelvény, majd az odds-gomb (odd-ID alapján).
@@ -355,7 +361,10 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
         if not found:
             log(f"  odds-gomb nem található az oldalon (odd {odd['id']})")
             screenshot(page, f"vegas_odds_nem_talalt_{attempt}")
+            out["error"] = "az odds-gomb nem található a Vegas liga-oldalán"
+            last = "notfound"
             continue
+        last = "fail"
         log(f"  O/U {tip.line} {pick} ({found['name']} @ {found['price']}) → kattintás")
         human_click(page, page.locator(f"[data-fbp-odd='{odd['id']}']").first)
 
@@ -417,7 +426,7 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
         return "ok"
 
     log(f"  3 kísérlet után sem sikerült: {tip}")
-    return "fail"
+    return last
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -27,6 +27,12 @@ from types import SimpleNamespace
 TIGHT_KICKOFF_S   = 480   # ennyi mp-nél közelebbi kezdésnél a véletlen várakozás elmarad
 EVENT_RETRY_WAIT  = 300   # 5 perc — NEM blokkolja a többi tippet (async sleep)
 MAX_EVENT_RETRIES = 3
+# Késői újrapróbálás: ha a MAX_EVENT_RETRIES elfogyott, de a meccs még messze van, nem
+# adjuk fel — LATE_RETRY_WAIT-enként újra nézzük, amíg a kezdésig LATE_RETRY_MIN_S-nál
+# több marad. 2026-10-10: a 16:09-kor kiadott 22:58-as Vegas tipp gombja még nem volt
+# kint, 15 perc után feladta; 17:01-kor elsőre ment.
+LATE_RETRY_WAIT   = 600
+LATE_RETRY_MIN_S  = 180
 
 
 # ── Gép ébren tartása futás közben (Windows) ──────────────────────────────────
@@ -423,10 +429,22 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
             # CSAK ezt a tippet érinti: async várakozás, közben más tipp mehet.
             event_retries += 1
             if event_retries > MAX_EVENT_RETRIES:
-                log(f"{tag} [BET_FAIL] esemény {MAX_EVENT_RETRIES}x nem volt megtalálható: {tip}", "fail")
+                # Ha a meccs még messze van, ritkábban tovább próbáljuk (csendben)
+                left = _seconds_to_kickoff(tip.time)
+                if left is not None and left - LATE_RETRY_WAIT > LATE_RETRY_MIN_S:
+                    log(f"  esemény nincs az oldalon ({event_retries - 1}x), a meccs "
+                        f"{left / 60:.0f} perc múlva kezdődik — {LATE_RETRY_WAIT // 60} perc "
+                        f"múlva újra", "warn")
+                    _foot("Esemény vár (késői újrapróbálás)")
+                    _status(key, tip, "retry", f"késői {event_retries - MAX_EVENT_RETRIES}.")
+                    await asyncio.sleep(LATE_RETRY_WAIT)
+                    if stop_event and stop_event.is_set():
+                        return
+                    continue
+                log(f"{tag} [BET_FAIL] esemény {event_retries - 1}x nem volt megtalálható: {tip}", "fail")
                 _foot("Esemény nem található")
                 _status(key, tip, "fail", "esemény nincs")
-                await _notify_fail(tip, "esemény nem található")
+                await _notify_fail(tip, reason or "esemény nem található")
                 return
             log(f"  esemény nincs az oldalon — {EVENT_RETRY_WAIT // 60} perc múlva újra "
                 f"({event_retries}/{MAX_EVENT_RETRIES})", "warn")
