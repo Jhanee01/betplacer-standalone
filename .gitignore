@@ -7,6 +7,10 @@
 strategy_stakes.json
 hidden_strategies.json
 
+# Számla-szinkron: a megrakott fogadások naplója + a jelentés állapota (gépenként)
+placed_bets.jsonl
+sync_report_state.json
+
 # Futás közbeni / generált
 logs/
 __pycache__/

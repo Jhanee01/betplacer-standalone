@@ -19,8 +19,10 @@ import os
 import random
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
+
+import account_sync
 
 
 # ── Esemény-újrapróbálás (csak az adott tippre vonatkozik) ────────────────────
@@ -397,6 +399,9 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 _foot("Fogadás OK ✓")
                 _status(key, tip, "ok")
                 if not cfg.dry_run:
+                    if not real:
+                        account_sync.record_placed(tip, tip_stake, bet_ref,
+                                                   _seconds_to_kickoff(tip.time))
                     await _notify_ok(tip, bet_ref)
                 return
 
@@ -453,6 +458,52 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
             await asyncio.sleep(EVENT_RETRY_WAIT)   # nem-blokkoló: más tippek mehetnek
             if stop_event and stop_event.is_set():
                 return
+
+    # ── Napi számla-szinkron jelentés ─────────────────────────────────────────
+    # Reggel (account_sync.SYNC_REPORT_AFTER után) naponta egyszer: a belépett
+    # irodák fiókjából lekéri az előző nap kiértékelt fogadásait, összeveti a
+    # placed_bets.jsonl naplóval, és az értesítő botnak elküldi. A lekérés a már
+    # belépett böngészőben, az iroda saját szálán fut (nincs második belépés).
+    account_sync.tracking_since()
+
+    async def _sync_report(day: str) -> bool:
+        since = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        results = {}
+        for bm in engines:
+            label = BOOKMAKER_LABEL[bm]
+            try:
+                async with place_lock:
+                    rows = await loop.run_in_executor(
+                        executors[bm],
+                        lambda bm=bm: account_sync.fetch_account(engines[bm], bm, since))
+                results[bm] = account_sync.compare(bm, day, rows)
+            except Exception as e:
+                log(f"[{label}] Számla-szinkron: a fiók nem kérdezhető le — {e}", "warn")
+                results[bm] = {"error": str(e)}
+        # Ha minden iroda hibázott, délig később újrapróbáljuk.
+        if all(r.get("error") for r in results.values()) and datetime.now().hour < 12:
+            return False
+        text = account_sync.build_message(day, results)
+        log(text, "muted")
+        if notify_bot_ready:
+            await _send_notify(text)
+        account_sync.mark_sent(day)
+        return True
+
+    async def _sync_loop():
+        while not (stop_event and stop_event.is_set()):
+            day = account_sync.due_report_day()
+            if day:
+                try:
+                    await _sync_report(day)
+                except Exception as e:
+                    log(f"Számla-szinkron hiba: {e}", "warn")
+            await asyncio.sleep(600)
+
+    if not cfg.dry_run:
+        sync_task = asyncio.create_task(_sync_loop())
+        tasks.add(sync_task)
+        sync_task.add_done_callback(tasks.discard)
 
     def on_tip(tip: ParsedTip):
         """A watcher hívja (szinkron, gyorsan visszatér). Taskot indít."""
