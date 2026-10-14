@@ -163,14 +163,44 @@ def _accept_terms(page) -> bool:
         return False
 
 
+# A Vegas „popup-center” reklámablakai (pl. 2026-10-14: „LEGYEN TIÉD AZ iPHONE 17e!”)
+# oldalmegnyitáskor ugranak fel és eltakarják az odds-gombot. CSAK a bezáró gombra
+# kattintunk (X vagy alsó „Bezárás”), a „RÉSZLETEK” gombra soha.
+_POPUP_CLOSE_SEL = ("[data-popup-center-dialog] [data-popup-center-close-button], "
+                    "[data-popup-center-dialog] .popup-center__metaDismiss")
+
+
+def _close_popups(page):
+    """Bezárja a felugró reklámablakokat (egymás után több is jöhet)."""
+    for _ in range(3):
+        try:
+            btn = page.locator(f"{_POPUP_CLOSE_SEL} >> visible=true")
+            if btn.count() == 0:
+                return
+            title = page.locator("[data-popup-center-dialog]").first.get_attribute("aria-label") or ""
+            human_click(page, btn.first)
+            page.wait_for_timeout(1000)
+            log(f"  Vegas reklámablak bezárva: {title[:60]}")
+        except Exception as e:
+            log(f"  Vegas reklámablak bezárása sikertelen: {e}")
+            try:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(500)
+            except Exception:
+                pass
+            return
+
+
 def _dismiss_cookie(page):
     """Cookie-ablak elvetése a legszűkebb opcióval (csak a nélkülözhetetlen sütik).
     Az ablak eltakarja a gombokat; az 'elutasítás' gombja a nyitó nézetben rejtett,
     ezért a Cookiebot saját API-ján adjuk meg ugyanezt. A döntés a contextben megmarad.
     Emellett a 60 percenként felugró „Emlékeztető” (felelős játék) ablakot is bezárja a
     „Tovább játszom” gombbal — különben az ablak eltakarja az odds-gombot és a szelvény
-    nem nyílik meg. A frissített Részvételi Szabályzat ablakát elfogadja (_accept_terms)."""
+    nem nyílik meg. A frissített Részvételi Szabályzat ablakát elfogadja (_accept_terms),
+    a reklámablakokat bezárja (_close_popups)."""
     _accept_terms(page)
+    _close_popups(page)
     try:
         cont = page.get_by_role("button", name=re.compile(r"Tovább játszom", re.I))
         if cont.count() > 0 and cont.first.is_visible():
@@ -218,6 +248,7 @@ def _login_once(page, username: str, password: str):
     page.wait_for_timeout(5000)
     if _accept_terms(page):          # a szabályzat-ablak a belépés után ugrik fel
         page.wait_for_timeout(2000)
+    _close_popups(page)              # a reklámablak is
     screenshot(page, "vegas_login_utan")
 
 
@@ -366,6 +397,7 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
             continue
         last = "fail"
         log(f"  O/U {tip.line} {pick} ({found['name']} @ {found['price']}) → kattintás")
+        _close_popups(page)    # késve felugró reklám ne kapja el a kattintást
         human_click(page, page.locator(f"[data-fbp-odd='{odd['id']}']").first)
 
         # 4. Szelvény: pontosan egy kiválasztás, tét beírása.
@@ -565,6 +597,7 @@ def place_real_tip(page, tip, username: str, password: str,
             screenshot(page, f"real_vegas_odds_nem_talalt_{attempt}")
             continue
         log(f"  {tip.piac} — {found['name']} @ {found['price']} → kattintás")
+        _close_popups(page)    # késve felugró reklám ne kapja el a kattintást
         human_click(page, page.locator(f"[data-fbp-odd='{oid}']").first)
 
         try:
