@@ -371,7 +371,13 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
         url = VEGAS_LEAGUE_URL.format(slug=_slug(info["champ"]))
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=PAGE_GOTO_TIMEOUT)
-            page.wait_for_selector("button[class*='OddBoxButton']", timeout=30000)
+            try:
+                page.wait_for_selector("button[class*='OddBoxButton']", timeout=12000)
+            except Exception:
+                # 2026-10-21: az „Emlékeztető” ablak blokkolta az oldal betöltését —
+                # előbb bezárjuk, és csak utána várunk újra.
+                _dismiss_cookie(page)
+                page.wait_for_selector("button[class*='OddBoxButton']", timeout=30000)
         except Exception as e:
             log(f"  navigáció hiba: {e}")
             screenshot(page, f"vegas_nav_hiba_{attempt}")
@@ -572,7 +578,11 @@ def place_real_tip(page, tip, username: str, password: str,
         try:
             page.goto("https://vegas.hu" + path, wait_until="domcontentloaded",
                       timeout=PAGE_GOTO_TIMEOUT)
-            page.wait_for_selector("button[class*='OddBoxButton']", timeout=30000)
+            try:
+                page.wait_for_selector("button[class*='OddBoxButton']", timeout=12000)
+            except Exception:
+                _dismiss_cookie(page)   # „Emlékeztető” ablak blokkolhatja a betöltést
+                page.wait_for_selector("button[class*='OddBoxButton']", timeout=30000)
         except Exception as e:
             log(f"  navigáció hiba: {e}")
             screenshot(page, f"real_vegas_nav_hiba_{attempt}")
