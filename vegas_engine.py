@@ -682,7 +682,12 @@ class VegasEngine:
     def start(self):
         self._pw      = sync_playwright().__enter__()
         self._browser = self._pw.chromium.launch(headless=True, args=_LAUNCH_ARGS)
-        context       = self._browser.new_context(viewport=VIEWPORT, locale="hu-HU")
+        # 2026-10-21: az Altenar Cloudflare-je 403-mal tiltja a „HeadlessChrome” UA-t
+        # (a sportfogadás-modul be sem töltődik) → normál Chrome UA.
+        ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              f"(KHTML, like Gecko) Chrome/{self._browser.version} Safari/537.36")
+        context       = self._browser.new_context(viewport=VIEWPORT, locale="hu-HU",
+                                                  user_agent=ua)
         self._page    = context.new_page()
         _install_resource_blocker(self._page)
         ensure_logged_in(self._page, self._username, self._password)
