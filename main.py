@@ -42,7 +42,34 @@ def _log(msg: str):
     print(f"[main] {datetime.now().strftime('%H:%M:%S')} {msg}", flush=True)
 
 
+def _ensure_supported_python():
+    """A .venv-ből (támogatott Python) fusson — régi indítóból is.
+
+    Túl új Python (pl. 3.15) alatt a Playwright nem indul
+    („'lazy_import' object is not callable”); az install.bat ilyenkor
+    feltelepíti a 3.13-at a .venv-be.
+    """
+    if sys.prefix != sys.base_prefix:  # már venv-ben fut
+        return
+    scripts = APP_DIR / ".venv" / "Scripts"
+    exe = "pythonw.exe" if Path(sys.executable).name.lower() == "pythonw.exe" else "python.exe"
+    if (scripts / exe).exists():
+        import subprocess
+        sys.exit(subprocess.call([str(scripts / exe), str(APP_DIR / "main.py"), *sys.argv[1:]], cwd=str(APP_DIR)))
+    if sys.version_info[:2] > (3, 13):
+        msg = (f"A gépen lévő Python ({sys.version.split()[0]}) túl új a BetPlacerhez.\n\n"
+               "Futtasd az install.bat-ot — feltelepíti a megfelelő Python 3.13-at "
+               "(a meglévő Pythonodat nem bántja).")
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, msg, "BetPlacer", 0x10)
+        except Exception:
+            print(msg)
+        sys.exit(1)
+
+
 def main():
+    _ensure_supported_python()
     args = _parse_args()
 
     if not ENV_PATH.exists() or args.setup:

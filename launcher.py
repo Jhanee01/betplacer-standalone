@@ -27,6 +27,10 @@ def _app_dir() -> Path:
 
 def _find_pythonw():
     """A konzol nélküli Python keresése. None, ha nincs telepítve."""
+    # 0) Az install.bat által létrehozott saját környezet (támogatott verzió).
+    venv = _app_dir() / ".venv" / "Scripts" / "pythonw.exe"
+    if venv.exists():
+        return str(venv)
     # 1) pythonw a PATH-on — ugyanaz a telepítés, amivel az install.bat
     #    a csomagokat telepítette ("Add Python to PATH").
     for name in ("pythonw.exe", "pythonw"):

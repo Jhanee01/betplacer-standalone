@@ -9,34 +9,24 @@ A program figyeli a megadott Telegram-csatornát, és amikor új tipp érkezik, 
 
 - **Windows 10 / 11**
 - Stabil internetkapcsolat
-- **Python 3.11+** — ezt az alábbi **1. lépésben** telepíted
+- A **Pythont nem kell külön telepíteni** — az `install.bat` elintézi
 
 ---
 
 ## Telepítés (egyszer kell)
 
-### 1. lépés — Python telepítése  ⚠️ NE HAGYD KI!
-
-A program Python nélkül **nem indul el**. 
-
-1. Töltsd le innen: **https://www.python.org/downloads/** → sárga *Download Python* gomb
-2. Indítsd el a letöltött telepítőt
-3. **A telepítő legalján MINDENKÉPP pipáld be: „Add python.exe to PATH"** ← enélkül nem fog működni!
-4. Kattints az *Install Now* gombra, várd meg, amíg végez
-
-> **Már van Pythonod?** Ellenőrizd: `Win + R` →  írd be: `cmd` → Enter, majd a fekete ablakba: `python --version`
-> Ha verziószámot ír (pl. `Python 3.12.1`), kész vagy, ugorj a 2. lépésre.
-
-### 2. lépés — A program telepítése
-
 1. Csomagold ki a `standalone_betplacer` mappát bárhova (pl. `C:\BetPlacer\`)
 2. Nyisd meg a mappát, kattints duplán az **`install.bat`** fájlra
-3. Várd meg, amíg befejezi (Python csomagok + Chromium letöltése ~2-5 perc)
+3. Várd meg, amíg befejezi (Python + csomagok + Chromium letöltése ~5-15 perc)
 4. Ha kész: `TELEPITES KESZ` felirat jelenik meg
 
-> Ha az `install.bat` azt írja, hogy *„A Python nem található"*, akkor az 1. lépés
-> kimaradt, vagy elfelejtetted bepipálni az *„Add python.exe to PATH"* opciót —
-> telepítsd újra a Pythont a pipával.
+> **Python:** a program a **3.11–3.13** verzióval működik. Ha a gépen van ilyen,
+> az `install.bat` azt használja; ha nincs (vagy csak túl új van, pl. 3.15), maga
+> letölti és felrakja a **Python 3.13**-at — admin jog nélkül, a meglévő Pythonodat
+> nem bántja. A program a saját mappájában lévő `.venv` környezetből fut.
+>
+> Ha indításkor ezt látod: *„Kritikus hiba: 'lazy_import' object is not callable"*
+> — túl új Pythonnal fut. Futtasd az **`install.bat`**-ot, és utána indítsd újra.
 
 ---
 

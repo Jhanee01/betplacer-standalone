@@ -12,6 +12,7 @@ placed_bets.jsonl
 sync_report_state.json
 
 # Futás közbeni / generált
+.venv/
 logs/
 __pycache__/
 *.pyc

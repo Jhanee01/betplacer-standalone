@@ -56,7 +56,9 @@ rem  indulna. A mar telepitett csomagokra pip "already satisfied"-et ir (offline
 rem  is gyors). A hibat nem tekintjuk vegzetesnek - lehet, hogy minden megvan.
 echo  Fuggosegek ellenorzese / telepitese... (par masodperc)
 pushd "%APP%."
-python -m pip install -r requirements.txt
+set "PY=python"
+if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
+"%PY%" -m pip install -r requirements.txt
 if errorlevel 1 (
     echo.
     echo  FIGYELEM: a fuggosegek telepitese nem sikerult teljesen.
