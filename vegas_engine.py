@@ -138,7 +138,10 @@ def _accept_terms(page) -> bool:
     „Frissült a Részvételi Szabályzat" szöveg ÉS az „Elfogadás" gomb (más ablak —
     pl. süti — gombját így sosem nyomja meg). Naplóz + Telegram-értesítést küld."""
     try:
-        doboz = page.locator("div:has-text('Frissült a Részvételi Szabályzat') >> visible=true")
+        # A gombot IS tartalmazó div kell: a .last enélkül a legbelső, csak szöveget
+        # tartalmazó bekezdés lett, amiben nincs gomb (2026-10-24: ezért nem fogadott).
+        doboz = page.locator("div:has-text('Frissült a Részvételi Szabályzat'):has(button)"
+                             " >> visible=true")
         if doboz.count() == 0:
             return False
         btn = doboz.last.get_by_role("button", name=re.compile(r"^\s*Elfogadás\s*$", re.I))
