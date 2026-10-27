@@ -222,10 +222,19 @@ def _fetch_vegas(context, page, since: str) -> list:
     for page_no in range(1, 41):
         body = dict(json.loads(first["body"] or "{}"), dateFrom=date_from, dateTo=date_to,
                     pageNumber=page_no, pageSize=50, statuses=_VEGAS_SETTLED)
-        resp = context.request.post(first["url"], headers=first["headers"], data=json.dumps(body))
-        if not resp.ok:
-            raise RuntimeError(f"bet-history HTTP {resp.status}")
-        data = resp.json()
+        # 2026-10-21 óta a context.request (nem böngésző-kérés) 403-at kap a Cloudflare-től
+        # → az oldalon belüli fetch. Kereszt-domaines: csak a nem tiltott fejlécek mennek,
+        # sütik nélkül (a credentials:'include' „Failed to fetch”-et ad).
+        headers = {k: v for k, v in first["headers"].items()
+                   if k.lower() in ("authorization", "content-type", "accept")}
+        resp = page.evaluate(
+            """async ([url, headers, body]) => {
+                const r = await fetch(url, {method: 'POST', headers, body, credentials: 'omit'});
+                return {status: r.status, text: await r.text()};
+            }""", [first["url"], headers, json.dumps(body)])
+        if resp["status"] != 200:
+            raise RuntimeError(f"bet-history HTTP {resp['status']}")
+        data = json.loads(resp["text"])
         page_bets = data.get("bets") if isinstance(data, dict) else None
         if not isinstance(page_bets, list):
             raise RuntimeError("bet-history: váratlan válasz")
