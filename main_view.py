@@ -174,7 +174,7 @@ class _Chart(QWidget):
         p.setFont(small)
         v = y_min
         while v <= y_max + 1e-6:
-            p.setPen(QPen(QColor("#555" if v == 0 else "#2a2a2a"), 1))
+            p.setPen(QPen(QColor("#4f5b62"), 2.5 if v == 0 else 1.5))   # mint a blokk-elválasztók
             p.drawLine(QPointF(L, y(v)), QPointF(W - R, y(v)))
             p.setPen(QColor("#7a7a7a"))
             p.drawText(QRectF(0, y(v) - 8, L - 8, 16),
@@ -628,8 +628,11 @@ class MainView(QWidget):
         # a qt-material :checked szabálya felülírná a közös stíluslapot → gombonként
         for b, on in ((self._seg_daily, not cum), (self._seg_cum, cum)):
             b.setChecked(on)
-            b.setStyleSheet(f"background:{GOLD};color:#111;border:1px solid {GOLD};" if on else
-                            f"background:transparent;color:{MUTED};border:1px solid #3a3a3a;")
+            b.setStyleSheet(f"QPushButton{{background:{GOLD};color:#000;border:2px solid {GOLD};"
+                            "border-radius:6px;padding:4px 12px;font-size:11px;font-weight:700;}" if on else
+                            f"QPushButton{{background:transparent;color:{GOLD};border:2px solid {GOLD};"
+                            "border-radius:6px;padding:4px 12px;font-size:11px;font-weight:700;}"
+                            "QPushButton:hover{background:rgba(253,185,0,0.15);}")
         self.refresh()
 
     def _save_stake(self, value: int):

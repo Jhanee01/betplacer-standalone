@@ -374,6 +374,36 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         _allow_sleep()
         return
 
+    # ── Böngésző-önjavítás ────────────────────────────────────────────────────
+    # Ha egy iroda Chromiuma leállt (összeomlás, kilőtt folyamat, alvás utáni
+    # állapot), minden további művelet „Target page, context or browser has been
+    # closed” hibát adna a következő indításig. Művelet előtt ellenőrizzük, és
+    # szükség esetén újraindítjuk + újra belépünk (az iroda saját szálán).
+    def _engine_alive(eng) -> bool:
+        try:
+            return (eng._browser is not None and eng._browser.is_connected()
+                    and eng._page is not None and not eng._page.is_closed())
+        except Exception:
+            return False
+
+    async def _ensure_engine(bm: str) -> bool:
+        eng, ex = engines[bm], executors[bm]
+        if await loop.run_in_executor(ex, lambda: _engine_alive(eng)):
+            return True
+        label = BOOKMAKER_LABEL[bm]
+        log(f"[{label}] A böngésző leállt — újraindítás és újra-belépés...", "warn")
+        try:
+            await loop.run_in_executor(ex, eng.stop)
+        except Exception:
+            pass
+        try:
+            await loop.run_in_executor(ex, eng.start)
+        except Exception as e:
+            log(f"[{label}] A böngésző újraindítása sikertelen: {e}", "error")
+            return False
+        log(f"[{label}] Böngésző újraindítva, belépve.", "ok")
+        return True
+
     # ── Számla: fióknév, egyenleg, nyitott fogadások, elszámolás ──────────────
     import account_info
     awaiting: dict = {bm: [] for bm in engines}     # iroda → [esedékesség (epoch)]
@@ -381,6 +411,9 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
     last_settle: dict = {bm: 0.0 for bm in engines}
 
     async def _refresh_info(bm: str):
+        if not await _ensure_engine(bm):
+            next_info[bm] = datetime.now().timestamp() + INFO_REFRESH_S
+            return
         try:
             info = await loop.run_in_executor(
                 executors[bm], lambda: account_info.read_info(engines[bm], bm))
@@ -396,6 +429,9 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
 
     for bm in engines:
         await _refresh_info(bm)
+        # induláskor MINDIG egy elszámolás-lekérés: a Leállítás előtti megrakások
+        # eredménye is bekerüljön, akkor is, ha a fiókban már nincs nyitott fogadás
+        awaiting[bm].append(datetime.now().timestamp())
 
     log("Telegram figyelés indul.", "ok")
     _foot("Figyelés aktív")
@@ -447,6 +483,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 if stop_event and stop_event.is_set():
                     return
                 tip_stake = _stake_now()
+                await _ensure_engine(bm)    # leállt böngésző → újraindítás megrakás előtt
                 log(f"{tag} Megrakás: {tip.pick_str} — {tip_stake} Ft...", "info")
                 _foot("Fogadás folyamatban...")
                 _status(key, tip, "placing")
@@ -600,7 +637,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 if not settle and now < next_info[bm]:
                     continue
                 async with place_lock:
-                    if settle:
+                    if settle and await _ensure_engine(bm):
                         last_settle[bm] = now
                         try:
                             rows = await loop.run_in_executor(
