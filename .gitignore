@@ -11,6 +11,14 @@ hidden_strategies.json
 placed_bets.jsonl
 sync_report_state.json
 
+# Főablak (v5.0.0): állapot, fogadásnapló, számla-elszámolás, irodánkénti tét (gépenként)
+betplacer_status.json
+betplacer_bets.jsonl
+betplacer_account_settled.json
+bet_stakes.json
+*.tmp
+naplo/
+
 # Futás közbeni / generált
 .venv/
 logs/

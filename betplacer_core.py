@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import account_sync
+import dashboard_state as ds
 
 
 # ── Esemény-újrapróbálás (csak az adott tippre vonatkozik) ────────────────────
@@ -35,6 +36,16 @@ MAX_EVENT_RETRIES = 3
 # kint, 15 perc után feladta; 17:01-kor elsőre ment.
 LATE_RETRY_WAIT   = 600
 LATE_RETRY_MIN_S  = 180
+
+# ── Számla (főablak) ──────────────────────────────────────────────────────────
+# A fiók adatai (név, egyenleg, nyitott fogadások) ennyi mp-enként frissülnek
+# tétlenül; az eredményt a fiók lezárt fogadásaiból olvassuk: első lekérés a
+# kezdés + 15 (8 perces) / + 20 (12 perces) perc után, utána SETTLE_RETRY_S-enként,
+# legfeljebb SETTLE_GIVE_UP_S-ig.
+INFO_REFRESH_S    = 300
+SETTLE_AFTER_MIN  = {"8min": 15, "12min": 20}
+SETTLE_RETRY_S    = 300
+SETTLE_GIVE_UP_S  = 3 * 3600
 
 
 # ── Gép ébren tartása futás közben (Windows) ──────────────────────────────────
@@ -92,7 +103,7 @@ BOOKMAKER_ENV = {
     "tippmixpro": dict(user="TIPPMIXPRO_USER", pw="TIPPMIXPRO_PASS",
                        channel="TELEGRAM_CHANNEL", stake="BET_STAKE",
                        enabled="TIPPMIXPRO_ENABLED", default_on="1",
-                       default_channel=""),
+                       default_channel="-1003404037430"),   # v5.0.0: a felületen nem állítható
     "vegas":      dict(user="VEGAS_USER", pw="VEGAS_PASS",
                        channel="TELEGRAM_CHANNEL_VEGAS", stake="BET_STAKE_VEGAS",
                        enabled="VEGAS_ENABLED", default_on="0",
@@ -142,6 +153,17 @@ def _fmt_tip_line(tip) -> str:
     else:
         market_pick = f"{tip.market} {tip.pick}"
     return f"{tip.time} | {tip.home_team} vs {tip.away_team} | {market_pick}"
+
+
+def _tip_summary(tip) -> str:
+    """A sikeres megrakás értesítésének törzse (a FIFA Tipster dashboarddal azonos):
+    '2026-10-28 12:18 Leipzig (BlackStar98) vs Frankfurt (Edwardson)\\nTipp: Over 4.5, Odds: 1.95'."""
+    when = f"{datetime.now():%Y-%m-%d} {tip.time}"
+    if tip.market == "OU" and tip.line is not None:
+        pick = f"{tip.pick.capitalize()} {tip.line}"
+    else:
+        pick = tip.pick.capitalize()
+    return f"{when} {tip.home_team} vs {tip.away_team}\nTipp: {pick}, Odds: {tip.odds}"
 
 
 def _parse_channel(raw: str):
@@ -257,14 +279,20 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
             log("Telegram értesítés elküldve (bot)." if ok
                 else "Telegram értesítés sikertelen (bot).",
                 "muted" if ok else "warn")
+            ds.set_telegram("bot", "ok" if ok else "error",
+                            error="" if ok else "az üzenet nem ment ki")
         except Exception as e:
             log(f"Értesítés küldése sikertelen: {e}", "warn")
+            ds.set_telegram("bot", "error", error=str(e)[:160])
 
     # Az értesítés első sora megmondja, melyik irodán (melyik fiókkal) történt.
     async def _notify_ok(tip, bet_ref: str = ""):
         if not (notify_on_ok and notify_bot_ready):
             return
-        msg = f"✅ Tipp megrakva — {tip.bookmaker_label}\n{_fmt_tip_line(tip)}"
+        if getattr(tip, "kind", "") == "real":
+            msg = f"✅ Tipp megrakva — {tip.bookmaker_label}\n{_fmt_tip_line(tip)}"
+        else:
+            msg = f"✅ Tipp megrakása sikeres: {tip.bookmaker_label}\n{_tip_summary(tip)}"
         if bet_ref:
             msg += f"\nSzelvény ID: {bet_ref}"
         await _send_notify(msg)
@@ -290,6 +318,19 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
             f"⚠️ Vonal megváltozott — a tipp NEM lett megrakva — {tip.bookmaker_label}\n"
             f"{_fmt_tip_line(tip)}\n"
             f"A(z) {tip.line} gólvonal már nem szerepel a kínálatban.")
+
+    # Főablak: a futás kezdete + az értesítő bot elérhetősége
+    ds.begin_run(cfg.dry_run, sorted(cfg.creds))
+    if not notify_bot_ready:
+        ds.set_telegram("bot", "missing", error="nincs beállítva értesítő bot")
+    else:
+        try:
+            import notifier
+            me = notifier.get_me(notify_bot_token)
+            ds.set_telegram("bot", "ok" if me.get("ok") else "error",
+                            bot=me.get("username", ""), error=me.get("error", ""))
+        except Exception as e:
+            ds.set_telegram("bot", "error", error=str(e)[:160])
 
     # Gép ébren tartása a teljes figyelési munkamenet alatt.
     if _prevent_sleep():
@@ -329,8 +370,32 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
 
     if not engines:
         log("Egyik irodába sem sikerült belépni — a figyelés nem indul.", "error")
+        ds.end_run()
         _allow_sleep()
         return
+
+    # ── Számla: fióknév, egyenleg, nyitott fogadások, elszámolás ──────────────
+    import account_info
+    awaiting: dict = {bm: [] for bm in engines}     # iroda → [esedékesség (epoch)]
+    next_info: dict = {bm: 0.0 for bm in engines}
+    last_settle: dict = {bm: 0.0 for bm in engines}
+
+    async def _refresh_info(bm: str):
+        try:
+            info = await loop.run_in_executor(
+                executors[bm], lambda: account_info.read_info(engines[bm], bm))
+        except Exception as e:
+            log(f"[{BOOKMAKER_LABEL[bm]}] fiókadatok nem olvashatók: {str(e)[:120]}", "muted")
+            return
+        if info:
+            ds.set_office(bm, **info)
+            if info.get("open_count") and not awaiting[bm]:
+                # nyitott fogadás (pl. a program előző futásából) → elszámolás figyelése
+                awaiting[bm].append(datetime.now().timestamp() + SETTLE_RETRY_S)
+        next_info[bm] = datetime.now().timestamp() + INFO_REFRESH_S
+
+    for bm in engines:
+        await _refresh_info(bm)
 
     log("Telegram figyelés indul.", "ok")
     _foot("Figyelés aktív")
@@ -368,15 +433,20 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         mode          = "[DRY RUN] " if cfg.dry_run else ""
         event_retries = 0
         base_stake    = cfg.sources[src].stake
-        tip_stake     = stake_maps[src].get(tip.strategy_key, base_stake)
         place_fn      = engine.place_real if real else engine.place
-        if tip_stake != base_stake:
-            log(f"  tét ehhez a stratégiához ({tip.strategy_key}): {tip_stake} Ft", "muted")
+
+        def _stake_now() -> int:
+            """FIFA: az iroda tétje a főablakból (megrakás előtt frissen olvasva, így az
+            átírt tét a következő tipptől él); Real Event: a stratégiánkénti tét."""
+            if real:
+                return stake_maps[src].get(tip.strategy_key, base_stake)
+            return ds.load_stakes()[bm]
 
         while True:
             async with place_lock:
                 if stop_event and stop_event.is_set():
                     return
+                tip_stake = _stake_now()
                 log(f"{tag} Megrakás: {tip.pick_str} — {tip_stake} Ft...", "info")
                 _foot("Fogadás folyamatban...")
                 _status(key, tip, "placing")
@@ -388,6 +458,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                     traceback.print_exc()
                     _foot("Hiba")
                     _status(key, tip, "fail", "kivétel")
+                    ds.log_bet(tip, "failed", tip_stake, "kivétel a fogadás során", cfg.dry_run)
                     await _notify_fail(tip, "kivétel a fogadás során")
                     return
             reason  = getattr(engine, "last_error", "")
@@ -398,17 +469,24 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 log(f"{tag} [BET_OK] {mode}{tip}{ref}", "ok")
                 _foot("Fogadás OK ✓")
                 _status(key, tip, "ok")
+                ds.log_bet(tip, "placed", tip_stake, dry_run=cfg.dry_run)
                 if not cfg.dry_run:
                     if not real:
                         account_sync.record_placed(tip, tip_stake, bet_ref,
                                                    _seconds_to_kickoff(tip.time))
+                        left = _seconds_to_kickoff(tip.time)
+                        if left is not None:
+                            after = SETTLE_AFTER_MIN.get(tip.minutes, 15) * 60
+                            awaiting[bm].append(datetime.now().timestamp() + left + after)
                     await _notify_ok(tip, bet_ref)
+                next_info[bm] = 0.0      # az egyenleg és a nyitott fogadások frissítése
                 return
 
             if result == "fail":
                 log(f"{tag} [BET_FAIL] {tip}" + (f" — {reason}" if reason else ""), "fail")
                 _foot("Fogadás sikertelen")
                 _status(key, tip, "fail")
+                ds.log_bet(tip, "failed", tip_stake, reason, cfg.dry_run)
                 await _notify_fail(tip, reason)
                 return
 
@@ -427,6 +505,8 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 log(f"{tag} [BET_SKIP] gólvonal megváltozott — kihagyva: {tip}", "warn")
                 _foot("Vonal változott — kihagyva")
                 _status(key, tip, "skipped", "vonal változott")
+                ds.log_bet(tip, "skipped", tip_stake,
+                           f"elmozdult a vonal ({tip.line} már nincs a kínálatban)", cfg.dry_run)
                 await _notify_line_changed(tip)
                 return
 
@@ -449,6 +529,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 log(f"{tag} [BET_FAIL] esemény {event_retries - 1}x nem volt megtalálható: {tip}", "fail")
                 _foot("Esemény nem található")
                 _status(key, tip, "fail", "esemény nincs")
+                ds.log_bet(tip, "failed", tip_stake, reason or "az esemény nem található", cfg.dry_run)
                 await _notify_fail(tip, reason or "esemény nem található")
                 return
             log(f"  esemény nincs az oldalon — {EVENT_RETRY_WAIT // 60} perc múlva újra "
@@ -505,6 +586,68 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         tasks.add(sync_task)
         sync_task.add_done_callback(tasks.discard)
 
+    async def _account_loop():
+        """Fiókadatok 5 percenként; esedékes elszámolásnál a fiók lezárt fogadásai.
+        Megrakás közben nem fut (place_lock), és mindig az iroda saját szálán."""
+        since = ds.session_start()[:10]
+        while not (stop_event and stop_event.is_set()):
+            now = datetime.now().timestamp()
+            for bm in engines:
+                dues = awaiting[bm]
+                dues[:] = [d for d in dues if now - d < SETTLE_GIVE_UP_S]
+                settle = (not cfg.dry_run and any(d <= now for d in dues)
+                          and now - last_settle[bm] >= SETTLE_RETRY_S)
+                if not settle and now < next_info[bm]:
+                    continue
+                async with place_lock:
+                    if settle:
+                        last_settle[bm] = now
+                        try:
+                            rows = await loop.run_in_executor(
+                                executors[bm],
+                                lambda bm=bm: account_sync.fetch_account(engines[bm], bm, since))
+                            ds.save_settled(bm, rows)
+                            log(f"[{BOOKMAKER_LABEL[bm]}] Számla-elszámolás: "
+                                f"{len(rows)} lezárt fogadás beolvasva", "muted")
+                        except Exception as e:
+                            log(f"[{BOOKMAKER_LABEL[bm]}] Számla-elszámolás sikertelen: "
+                                f"{str(e)[:120]}", "warn")
+                    await _refresh_info(bm)
+                if settle and not ds.load_status().get("offices", {}).get(bm, {}).get("open_count"):
+                    dues[:] = [d for d in dues if d > now]   # minden lezárult
+            await asyncio.sleep(30)
+
+    acc_task = asyncio.create_task(_account_loop())
+    tasks.add(acc_task)
+    acc_task.add_done_callback(tasks.discard)
+
+    channel_ok: dict = {}       # csatorna-felirat → tagja-e a fiók (elérhető-e)
+
+    def _watch_log(msg: str, kind: str = "info"):
+        """A figyelő eseményei a naplóba + a csatorna-figyelés állapota a főablaknak.
+        Csatornánként: ha a saját Telegram-fiók nem tagja a csatornának, az nem
+        található → a főablak „nem tag” jelzést mutat (a tippeket nem látná)."""
+        import re as _re
+        m = _re.match(r"\[([^\]]+)\] Csatorna (rendben|nem található)", msg)
+        if m:
+            channel_ok[m.group(1)] = m.group(2) == "rendben"
+        if "Figyelés aktív" in msg or "kapcsolat helyreállt" in msg:
+            missing = [c for c, ok in channel_ok.items() if not ok]
+            ds.set_telegram("watcher", "partial" if missing else "ok", channels=dict(channel_ok),
+                            error=("Nem tagja a csatornának: " + ", ".join(missing)) if missing else "")
+        elif "Csatlakozás a Telegramhoz" in msg:
+            channel_ok.clear()
+            ds.set_telegram("watcher", "connecting", channels={}, error="")
+        elif "Egyik csatorna sem" in msg:
+            ds.set_telegram("watcher", "error", channels=dict(channel_ok),
+                            error="A fiók egyik tipp-csatornának sem tagja")
+        elif "munkamenet lejárt" in msg:
+            ds.set_telegram("watcher", "error", error="A Telegram-bejelentkezés lejárt — "
+                            "futtasd újra a beállító varázslót")
+        elif "kapcsolat megszakadt" in msg:
+            ds.set_telegram("watcher", "error", error="újracsatlakozás folyamatban")
+        log(msg, kind)
+
     def on_tip(tip: ParsedTip):
         """A watcher hívja (szinkron, gyorsan visszatér). Taskot indít."""
         if tip.bookmaker not in engines:
@@ -538,7 +681,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                       if s.bookmaker in engines},
             on_tip=on_tip,
             strategy_filter=cfg.strategy, stop_event=stop_event,
-            log=log,   # a figyelő eseményei a fő (színes) Naplóra is kerüljenek
+            log=_watch_log,   # a figyelő eseményei a naplóba + állapot a főablaknak
         )
     finally:
         # Folyamatban lévő tipp-taskok leállítása, majd a böngészők bezárása.
@@ -549,5 +692,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         for bm, eng in engines.items():
             await loop.run_in_executor(executors[bm], eng.stop)
             executors[bm].shutdown(wait=False)
+        ds.set_telegram("watcher", "off")
+        ds.end_run()
         _allow_sleep()   # a gép visszamehet alvásba
         log("Leállt.", "muted")
