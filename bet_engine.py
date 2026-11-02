@@ -668,14 +668,40 @@ def _slip_text(contexts) -> str:
     return ""
 
 
+# A tippadó (Fifa Tipster tippszuro) PLAYER_ALIAS-ának másolata: nyers (TippmixPro)
+# név -> a tippben szereplő kanonikus név. A tipp a kanonikus nevet viszi („Gaga”), a
+# szelvényen a nyers név áll („Daca”) — 2026-11-02 17:32 emiatt dobta el a jó
+# Germany–Netherlands szelvényt. Új alias a tippszűrőben -> ide is fel kell venni.
+PLAYER_ALIAS = {
+    "Daca": "Gaga",
+    "Bombi1t0": "Bomb1to",
+    "Bomb1t0": "Bomb1to",
+    "Laikingdast": "LaikingDast",
+    "nikitta": "nikkitta",
+    "nikkilta": "nikkitta",
+    "nikitita": "nikkitta",
+    "dorian": "dor1an",
+    "v1nniePuh": "v1nn",
+    "Flewless_Phoenix": "Flewless_phoenix",
+    "KRaftVK": "kraftvk",
+    "Kallu": "KaLuBa",
+    "Jkey": "JKey",
+}
+_ALIAS_REV: dict = {}
+for _raw, _canon in PLAYER_ALIAS.items():
+    _ALIAS_REV.setdefault(_canon.lower(), set()).add(_raw.lower())
+
+
 def _nev_a_szelvenyen(low: str, full: str, clean: str) -> bool:
     """A tipp egyik oldala a szelvényen van-e. Ha a tippben van játékos („Man City
     (chevare)”), a JÁTÉKOST keressük zárójelben — a csapatnév a tippben rövidített
     lehet („Man City”), a szelvényen teljes („Manchester City”): 2026-10-03-án emiatt
-    dobta el a jó szelvényt. Játékos nélkül a csapatnév dönt."""
+    dobta el a jó szelvényt. Játékos nélkül a csapatnév dönt. A játékos ismert
+    aliasai (PLAYER_ALIAS) is elfogadottak."""
     m = re.search(r"\(([^)]+)\)", full or "")
     if m:
-        return "(" + " ".join(m.group(1).split()).lower() + ")" in low
+        nev = " ".join(m.group(1).split()).lower()
+        return any("(" + v + ")" in low for v in {nev} | _ALIAS_REV.get(nev, set()))
     return _team_in_text(low, full) or _team_in_text(low, clean)
 
 
