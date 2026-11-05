@@ -1,0 +1,293 @@
+# BetPlacer Standalone
+
+Automatikus fogadás Tippmixpro-n Telegram-csatorna alapján.  
+A program figyeli a megadott Telegram-csatornát, és amikor új tipp érkezik, automatikusan megrakja a fogadást.
+
+---
+
+## Rendszerkövetelmények
+
+- **Windows 10 / 11**
+- Stabil internetkapcsolat
+- A **Pythont nem kell külön telepíteni** — az `install.bat` elintézi
+
+---
+
+## Telepítés (egyszer kell)
+
+1. Csomagold ki a `standalone_betplacer` mappát bárhova (pl. `C:\BetPlacer\`)
+2. Nyisd meg a mappát, kattints duplán az **`install.bat`** fájlra
+3. Várd meg, amíg befejezi (Python + csomagok + Chromium letöltése ~5-15 perc)
+4. Ha kész: `TELEPITES KESZ` felirat jelenik meg
+
+> **Python:** a program a **3.11–3.13** verzióval működik. Ha a gépen van ilyen,
+> az `install.bat` azt használja; ha nincs (vagy csak túl új van, pl. 3.15), maga
+> letölti és felrakja a **Python 3.13**-at — admin jog nélkül, a meglévő Pythonodat
+> nem bántja. A program a saját mappájában lévő `.venv` környezetből fut.
+>
+> Ha indításkor ezt látod: *„Kritikus hiba: 'lazy_import' object is not callable"*
+> — túl új Pythonnal fut. Futtasd az **`install.bat`**-ot, és utána indítsd újra.
+
+---
+
+## Első indítás
+
+Kattints duplán a **`run.bat`** fájlra (vagy parancssorból: `python main.py`).
+
+Megnyílik a **beállítási varázsló** (5 lépés):
+
+| Lépés | Mit kér? | Honnan? |
+|-------|----------|---------|
+| 1 | Telefonszám | Saját Telegram-fiók |
+| 2 | Megerősítő kód | SMS / Telegram értesítés |
+| 3 | Tippmixpro felhasználónév + jelszó | Saját Tippmixpro-fiók |
+| 4 | Értesítő bot token | @BotFather (lásd lentebb) — **kihagyható** |
+| 5 | Alap tét (Ft) | Saját döntés |
+
+A beállítások elmentődnek — **következő indításkor már nem kell újra megadni.**
+
+> A 4. lépés (értesítő bot) **nem kötelező**, de erősen ajánlott: enélkül nem
+> kapsz értesítést, ha egy fogadás nem sikerül. A „Most kihagyom" gombbal
+> átugorható, és **később bármikor pótolható** — a főablak fejlécében az
+> **„Értesítő bot"** gombbal (vagy a `python main.py --setup` paranccsal).
+
+---
+
+## Értesítő bot létrehozása (sikertelen fogadás riasztása)
+
+A program egy **saját Telegram-boton** keresztül értesít, ha egy fogadást nem
+sikerül megrakni. Így **push-értesítést** kapsz a telefonod kijelzőjén — nem
+csak akkor látod, ha megnyitod a Telegramot.
+
+> **Miért bot, és miért nem a saját üzeneteid?** A Telegram a *saját magadnak*
+> küldött üzenetekről (Saved Messages) nem ad push-értesítést. Egy külön bot
+> viszont „bejövő" üzenetként ír neked → felugrik a riasztás a telefonon.
+
+A bot létrehozása kb. 1 perc, **egyszer kell**:
+
+1. Telegramban keresd meg: **@BotFather** (a kék pipás, hivatalos)
+2. Küldd neki: **`/newbot`**
+3. Adj a botnak egy **nevet** (bármi lehet, pl. „BetPlacer Riasztó")
+4. Adj egy **felhasználónevet** — `bot`-ra kell végződnie (pl. `betplacer_riaszto_bot`)
+5. A BotFather válaszában kapsz egy **tokent**, ilyesmit:
+   `123456789:AAH4d…xYz` — **ezt másold ki**
+6. A beállítási varázsló **4. lépésénél** illeszd be ezt a tokent
+7. **Fontos:** nyisd meg a most létrehozott saját botodat a Telegramban, és nyomj
+   rá a **Start** gombra (vagy küldj neki egy `/start` üzenetet)
+8. A varázslóban kattints az **„Összekapcsolás"** gombra — ekkor automatikusan
+   megtalálja, hova küldje az értesítéseket, és **azonnal küld egy teszt-üzenetet**
+   („✅ BetPlacer összekapcsolva"), amit látnod kell a Telegramodban / a telefonod
+   kijelzőjén. Ha megjött, kész — működik a push.
+
+Ha még nem nyomtál Start-ot, a varázsló szól, hogy tedd meg, majd kattints újra.
+
+> **Utólag is beállítható:** ha a varázslónál kihagytad, a fő ablak fejlécében az
+> **„Értesítő bot"** gombbal bármikor megadhatod a tokent — ugyanaz a folyamat
+> (token → Start → Összekapcsolás), futás közben is.
+
+---
+
+## Napi használat
+
+Kattints duplán a **`run.bat`** fájlra. Megnyílik a BetPlacer ablak:
+
+```
+⚽ BetPlacer                        ● LEÁLLÍTVA
+──────────────────────────────────────────────
+Csatorna: (beállítva)  |  Tét: [ 500 ] Ft    [▶ Indítás]
+──────────────────────────────────────────────
+[14:32:01] BetPlacer kész. Kattints az Indítás gombra.
+```
+
+1. Szükség esetén **írd át a tét értékét** a „Tét" mezőben (Ft)
+2. Kattints az **`▶ Indítás`** gombra
+3. A program bejelentkezik Tippmixpro-ra (~15 mp)
+4. Figyeli a csatornát — ha jön tipp, automatikusan megrakja
+
+> **Tét a GUI-ban:** a fő ablak „Tét" mezőjében bármikor átírhatod a tétet —
+> az Indításkor lép érvénybe, és **elmentődik** a következő indításhoz is.
+> Futás közben a mező zárolva van; a tét módosításához állítsd le, írd át, és
+> indítsd újra. (A `python main.py --stake 1000` indítási kapcsoló is működik.)
+
+**Konzol színek:**
+- 🟡 Arany — új tipp érkezett, várakozás
+- 🟢 Zöld — `[BET_OK]` sikeres fogadás
+- 🔴 Piros — `[BET_FAIL]` sikertelen fogadás
+- Szürke — általános infó
+
+---
+
+## Alvó mód
+
+Amíg a BetPlacer fut (Indítás után), a program **megakadályozza, hogy a gép
+elaludjon** — így a fogadásokat éjjel is megrakja. A **kijelző közben
+elsötétülhet** (áramot spórol), a rendszer viszont ébren marad.
+
+Fontos tudni:
+- A gép **valódi alvás közben nem tud scriptet futtatni** (a processzor áll) —
+  ezt egyetlen program sem tudja megkerülni. Ezért tartjuk inkább ébren.
+- A védelem csak **futás közben** él. Ha leállítod a BetPlacert, a gép újra
+  normálisan elalhat.
+- **Monitor lekapcsolása vagy képernyőkímélő nem gond** — a gép „agya" tovább
+  dolgozik, a script fut. Csak a tényleges alvás állítaná meg.
+
+### Laptop: fedél lecsukásakor is fusson
+
+Laptopon a fedél lecsukása **alapból elaltatja a gépet** (és leállítja a
+scriptet). Ezt a Windows külön kezeli, ezért egyszer át kell állítani:
+
+**Vezérlőpultból (ajánlott):**
+1. **Vezérlőpult** → **Hardver és hang** → **Energiagazdálkodási lehetőségek**
+   *(vagy a Start melletti keresőbe írd: „fedél" / „lid")*
+2. Bal oldalt: **„A fedél lecsukásának hatása"**
+3. A **„A fedél lecsukásakor:"** sorban állítsd **„Nem történik semmi"**-re.
+   Két oszlop van — **Akkumulátorról** és **Hálózatról**; legalább a
+   **Hálózatról** oszlopot állítsd erre (legjobb mindkettőt)
+4. **Módosítások mentése**
+
+**Vagy egy paranccsal** (nyiss egy parancssort és illeszd be):
+```bat
+powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg /setactive SCHEME_CURRENT
+```
+*(A `0` = „nem történik semmi". `setac…` = töltőn, `setdc…` = akkun.)*
+
+Ezután lecsukott fedéllel: a kijelző lekapcsol, de a **rendszer ébren marad és a
+script fut tovább.**
+
+> **Tippek:** tartsd **töltőn**, és tudd, hogy lecsukva a laptop kissé
+> **melegebb** lehet (szűkebb szellőzés). Hosszú, éjszakai futáshoz jobb nyitott
+> fedéllel (a kijelző úgyis lekapcsol).
+
+- 0–24 órás, gépfüggetlen működéshez egy mindig bekapcsolt szerver (VPS) a
+  legbiztosabb — ez nagyobb átalakítás, kérésre megoldható.
+
+---
+
+## Parancssori opciók
+
+```bash
+run.bat                      ← ajánlott indítás (GUI ablakkal)
+python main.py               ← ugyanaz
+python main.py --stake 1000  ← más tét erre a futásra
+python main.py --dry-run     ← teszt mód (nem fogad élesben)
+python main.py --setup       ← beállítások újra (wizard)
+python main.py --no-gui      ← csak parancssor, ablak nélkül
+```
+
+---
+
+## Távoli vezérlés telefonról (Remote)
+
+Egy mobilbarát web-felület, amin **telefonról láthatod az élő naplót** és
+**újraindíthatod** a BetPlacert — bárhonnan, privát Tailscale-alagúton át. Csak
+ennyit tud: **élő log + Újraindítás gomb**, semmi mást.
+
+A futó program automatikusan felhúzza a web-szervert egy háttérszálon — nincs
+külön indítás. Egy **token** védi (csak ezzel lehet csatlakozni); a program első
+indításkor generál egyet, és a `.env`-be írja. A token az indításkor a naplóban is
+megjelenik (helyi cím + token).
+
+### Mit kell telepíteni?
+- **Csak a Tailscale-t** kell telepíteni — se portnyitás, se router-beállítás, se
+  külön szerver nem kell. A BetPlacer maga viszi a web-szervert.
+- A Tailscale ingyenes magáncélra: <https://tailscale.com/download>
+
+### Beüzemelés (egyszer, ~5 perc)
+1. **Telepítsd a Tailscale-t a GÉPRE** (ahol a BetPlacer fut) és **a TELEFONRA** is.
+2. **Lépj be ugyanazzal a fiókkal** mindkét eszközön (Google/Microsoft/e-mail —
+   mindegy, csak ugyanaz legyen). Így a két eszköz egy privát hálózatba kerül.
+3. A gépen a Tailscale appban nézd meg a gép **Tailscale-IP-jét** (`100.x.y.z`
+   alakú). A telefon ezen a címen éri majd el a gépet, bárhonnan.
+4. Indítsd el a BetPlacert. A **Napló** fülön megjelenik a pontos cím + token, pl.:
+   ```
+   Remote elérhető — helyben: http://127.0.0.1:8766/?token=AbC123...
+   Telefonról: http://100.x.y.z:8766/?token=AbC123...
+   ```
+5. A **telefon böngészőjében** nyisd meg a „Telefonról:" sorban látott teljes
+   címet (IP + port + token). Kész — látod az élő naplót és az Újraindítás gombot.
+
+> **Helyi teszt a gépen:** `http://127.0.0.1:<port>/?token=<token>`
+> Fontos: a `0.0.0.0` **nem** böngészhető cím (csak „minden interfész" bind) —
+> helyben mindig `127.0.0.1`-et használj.
+
+### Port — ha a Fifa Tipster dashboard is fut
+A dashboard remote-ja **és** a standalone is alapból a **8765**-öt használja. Ha a
+dashboard már fut, a standalone **automatikusan a következő szabad portra lép**
+(8766, 8767, …) — ezt a Napló is kiírja. Tehát a kettő elfér egymás mellett; csak
+ügyelj rá, hogy a telefonon a **naplóban látott portot** nyisd meg, ne fixen a 8765-öt.
+
+### A token
+- A program első indításkor generál egyet, és a `.env` `RIM_REMOTE_TOKEN=` sorába írja.
+- A teljes belépési címet (token-nel) mindig a **Napló** fülön látod indításkor.
+- A token nélkül a kapcsolat elutasításra kerül (ez a biztonsági kapu).
+
+### Finomhangolás (`.env`, opcionális)
+```
+RIM_REMOTE_PORT=8765       ← kívánt port (ha foglalt, automatikusan a következő szabad)
+RIM_REMOTE_ENABLED=false   ← a remote teljes kikapcsolása
+RIM_REMOTE_TOKEN=...        ← a belépési token (a program generálja, kézzel is megadható)
+```
+
+---
+
+## Hogyan működik?
+
+```
+Telegram-csatorna
+      ↓ új tipp üzenet
+  BetPlacer értelmezi
+      ↓ (meccs, pick, sor, odds)
+  30–120 mp véletlenszerű várakozás
+      ↓
+  Megnyitja a Tippmixpro oldalt
+      ↓ bejelentkezik (automatikusan)
+  Megkeresi a meccset
+      ↓ kitölti a szelvényt
+  Feladja a fogadást
+      ↓
+  [BET_OK] / [BET_FAIL] az ablakban
+```
+
+---
+
+## Hibaelhárítás
+
+| Hiba | Megoldás |
+|------|----------|
+| `HIBA: Hiányos .env konfiguráció` | Futtasd: `python main.py --setup` |
+| `Bejelentkezés sikertelen` | Ellenőrizd a Tippmixpro felhasználónevet/jelszót |
+| `esemény nem található` | A meccs valószínűleg már elindult vagy nem elérhető |
+| Playwright hiba | Futtasd újra: `python -m playwright install chromium` |
+| GUI nem nyílik meg | Futtasd: `python main.py --no-gui` |
+| Nem jön bot-értesítés | Nyomtál Start-ot a botnál? Állítsd be újra: `python main.py --setup` |
+| `Érvénytelen token` | Másold be újra a @BotFather-től kapott teljes tokent |
+
+---
+
+## Fájlstruktúra
+
+```
+standalone_betplacer/
+├── main.py              ← belépési pont
+├── gui.py               ← GUI ablak (konzol, Start/Stop gomb)
+├── setup_wizard.py      ← beállítási varázsló (első indításkor)
+├── telegram_watcher.py  ← Telegram figyelő
+├── tip_parser.py        ← üzenet értelmező
+├── notifier.py          ← értesítő bot (sikertelen fogadás → push)
+├── remote/              ← távoli vezérlő (mobil web: élő log + újraindítás)
+│   ├── server.py        ← FastAPI + uvicorn webszerver (háttérszálon)
+│   └── static/index.html← mobil felület
+├── bet_engine.py        ← Tippmixpro fogadás (Playwright)
+├── requirements.txt     ← Python csomagok listája
+├── install.bat          ← telepítő (egyszer kell futtatni)
+├── run.bat              ← napi indítás
+├── .env                 ← beállítások (automatikusan jön létre)
+├── telegram_session.session  ← Telegram munkamenet (automatikusan)
+└── logs/                ← képernyőmentések hibakereséshez
+```
+
+---
+
+*A `telegram_session.session` és `.env` fájlokat ne add ki senkinek — ezek személyes belépési adatokat tartalmaznak.*
