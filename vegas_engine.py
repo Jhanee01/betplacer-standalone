@@ -33,8 +33,20 @@ VEGAS_LEAGUE_URL = "https://vegas.hu/sports/elabdarugas/e-battles/{slug}"
 
 # Az Altenar nyilvános API-ja (böngésző és bejelentkezés nélkül is válaszol).
 _API_URL = "https://hu-sb2frontend-altenar2.biahosted.com/api/widget/GetEvents"
+# 2026-11-03 este a Vegas új oldalra váltott: az Altenar „integration” neve
+# "vegas.hu" → "vegashu2" (a régivel az API ÜRES listát ad), a timezoneOffset pedig
+# a helyi időszámítást követi (téli idő: -60, nyári: -120).
+VEGAS_INTEGRATION = "vegashu2"
+
+
+def _tz_offset() -> int:
+    from datetime import datetime as _dt
+    off = _dt.now().astimezone().utcoffset()
+    return -int(off.total_seconds() // 60) if off is not None else -60
+
+
 _API_PARAMS = {
-    "culture": "hu-HU", "timezoneOffset": -120, "integration": "vegas.hu",
+    "culture": "hu-HU", "timezoneOffset": _tz_offset(), "integration": VEGAS_INTEGRATION,
     "deviceType": 1, "numFormat": "hu-HU", "countryCode": "HU",
     "eventType": 0,          # 0 = kezdés előtti meccsek
     "sportId": 146,          # e-Labdarúgás
@@ -89,6 +101,7 @@ def _slug(champ: str) -> str:
 
 
 def _fetch_events() -> dict:
+    _API_PARAMS["timezoneOffset"] = _tz_offset()   # időszámítás-váltáskor is
     url = f"{_API_URL}?{urllib.parse.urlencode(_API_PARAMS)}"
     req = urllib.request.Request(url, headers=_API_HEADERS)
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -124,14 +137,113 @@ def lookup(event_id: str) -> dict | None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def is_logged_in(page) -> bool:
-    """Kilépett állapotban a fejlécben 'Belépés' gomb (button.header__login) látszik."""
+    """Belépve a fejlécben a felhasználó-menü ([data-qid=navigation-user]) látszik.
+
+    2026-11-05: a Vegas új fejlécet kapott — a régi „button.header__login” megszűnt,
+    ezért a régi (tagadó) ellenőrzés MINDIG belépettnek látta az oldalt, és a bot be
+    sem jelentkezett. Most pozitív jelre nézünk."""
     try:
-        return page.locator("button[class*='header__login'] >> visible=true").count() == 0
+        if page.locator("[data-qid='nav-login-btn'] >> visible=true").count() > 0:
+            return False
+        return page.locator("[data-qid='navigation-user'] >> visible=true").count() > 0
     except Exception:
         return False
 
 
+def _notify(text: str) -> None:
+    try:
+        import os
+        import notifier
+        tok, chat = os.getenv("NOTIFY_BOT_TOKEN", ""), os.getenv("NOTIFY_CHAT_ID", "")
+        if tok and chat:
+            notifier.send_message(tok, chat, text)
+    except Exception:
+        pass
+
+
+_TERMS_FAIL_NOTIFIED = [0.0]
+
+
+def _accept_terms_updated(page) -> bool:
+    """Az új oldal óta (2026-11-05) a módosult szabályzat a „Megváltozott a
+    szabályzatunk” ablakban jön (.terms-updated…), és letakarja az oldalt. Bezáró
+    gombja nincs, csak „Elfogadás”, ami a görgethető szöveg végéig görgetés után
+    aktív, és egy ablakban több dokumentum jöhet egymás után. A felhasználó kérésére
+    (kb. hetente változik) automatikusan elfogadjuk: kép, napló, Telegram."""
+    box = page.locator("[class*='terms-updated__terms-box'] >> visible=true")
+    try:
+        if box.count() == 0:
+            return False
+        screenshot(page, "vegas_szabalyzat_ablak")
+        accepted = 0
+        for _ in range(6):
+            if box.count() == 0:
+                break
+            terms = page.locator("[class*='terms-updated__terms-box--terms']").first
+            terms.hover()
+            for _ in range(30):
+                page.mouse.wheel(0, 400)
+                page.wait_for_timeout(250)
+                if terms.evaluate("e => e.scrollTop + e.clientHeight >= e.scrollHeight - 2"):
+                    break
+            btn = page.locator("[class*='terms-updated'] [role='button']:has-text('Elfogadás')"
+                               " >> visible=true")
+            if btn.count() == 0:
+                raise RuntimeError("az Elfogadás gomb nem található")
+            for _ in range(10):
+                if "disabled" not in (btn.first.get_attribute("class") or ""):
+                    break
+                page.wait_for_timeout(500)
+            human_click(page, btn.first)
+            page.wait_for_timeout(2000)
+            accepted += 1
+        if box.count() > 0:
+            raise RuntimeError(f"az ablak {accepted} elfogadás után is kint maradt")
+    except Exception as e:
+        log(f"  Vegas: „Megváltozott a szabályzatunk” elfogadása sikertelen: {e}")
+        if time.time() - _TERMS_FAIL_NOTIFIED[0] > 3600:
+            _TERMS_FAIL_NOTIFIED[0] = time.time()
+            screenshot(page, "vegas_szabalyzat_sikertelen")
+            _notify("⚠️ Vegas: a „Megváltozott a szabályzatunk” ablakot a BetPlacer nem tudta "
+                    "elfogadni. Amíg kint van, nem tud a Vegason fogadni — fogadd el kézzel a vegas.hu-n.")
+        return False
+    log("  Vegas: a megváltozott szabályzat automatikusan ELFOGADVA")
+    screenshot(page, "vegas_szabalyzat_elfogadva")
+    _notify("ℹ️ Vegas: a BetPlacer elfogadta a megváltozott szabályzatot "
+            "(„Megváltozott a szabályzatunk”). Érdemes elolvasni: vegas.hu")
+    return True
+
+
+def _cookie_consent(page, wait_ms: int = 0) -> None:
+    """A Cookiebot döntés leadása (csak nélkülözhetetlen sütik) — akkor is, ha az
+    ablak MÉG nem jelent meg. 2026-11-05: friss böngészőben a süti-ablak a belépő-
+    űrlap megnyitása UTÁN ugrott fel, letakarta az űrlapot, és a belépés elbukott."""
+    try:
+        if wait_ms:
+            try:
+                page.wait_for_function("() => !!window.Cookiebot", timeout=wait_ms)
+            except Exception:
+                pass
+        done = page.evaluate("""() => {
+            const cb = window.Cookiebot;
+            if (!cb) return 'none';
+            const d = document.querySelector('#CybotCookiebotDialog');
+            const shown = !!d && getComputedStyle(d).display !== 'none';
+            if (cb.hasResponse && !shown) return 'had';
+            cb.submitCustomConsent(false, false, false);
+            cb.hide();
+            return 'set';
+        }""")
+        if done == "set":
+            page.wait_for_timeout(800)
+            log("  cookie banner elvetve (csak nélkülözhetetlen sütik)")
+    except Exception as e:
+        log(f"  cookie banner elvetése sikertelen: {e}")
+
+
 def _accept_terms(page) -> bool:
+    if _accept_terms_updated(page):
+        return True
     """A frissített „Részvételi Szabályzat" elfogadása (a felhasználó kérésére
     automatikusan, 2026-09-30). Belépéskor felugró ablak; amíg nincs elfogadva, a
     belépés nem fejeződik be. CSAK akkor kattint, ha ugyanabban az ablakban van a
@@ -212,33 +324,36 @@ def _dismiss_cookie(page):
             log("  Vegas emlékeztető ablak bezárva (Tovább játszom)")
     except Exception as e:
         log(f"  Vegas emlékeztető bezárása sikertelen: {e}")
-    try:
-        if page.locator("#CybotCookiebotDialog >> visible=true").count() == 0:
-            return
-        # A mentés után az ablak magától csak újratöltéskor tűnne el → hide().
-        page.evaluate("() => { if (window.Cookiebot) {"
-                      " Cookiebot.submitCustomConsent(false, false, false); Cookiebot.hide(); } }")
-        page.wait_for_timeout(800)
-        log("  cookie banner elvetve (csak nélkülözhetetlen sütik)")
-    except Exception as e:
-        log(f"  cookie banner elvetése sikertelen: {e}")
+    _cookie_consent(page)
 
 
 def _login_once(page, username: str, password: str):
     log("Vegas: navigálás a belépéshez...")
     page.goto(VEGAS_LOGIN_URL, wait_until="domcontentloaded", timeout=PAGE_GOTO_TIMEOUT)
     page.wait_for_timeout(3000)
+    _cookie_consent(page, wait_ms=10000)   # a süti-döntés MÉG az űrlap előtt
     _dismiss_cookie(page)
     if is_logged_in(page):
         return
+    # Új fejléc (2026-11-05): a ?modal=login már nem nyitja meg az űrlapot, a
+    # fejléc „Bejelentkezés” gombjára kell kattintani; a mező neve username lett.
+    user_sel = "input[name='username'], input[name='email']"
     try:
-        page.wait_for_selector("input[name='email']", state="visible", timeout=15000)
+        if page.locator(f"{user_sel} >> visible=true").count() == 0:
+            login_btn = page.locator("[data-qid='nav-login-btn'] >> visible=true")
+            if login_btn.count() > 0:
+                human_click(page, login_btn.first)
+        page.wait_for_selector(f"{user_sel} >> visible=true", timeout=15000)
     except PWTimeout:
         screenshot(page, "vegas_login_form_timeout")
         raise RuntimeError("Vegas: a belépő-űrlap nem jelent meg.")
+    _cookie_consent(page)                  # ha közben mégis felugrott
+    if page.locator(f"{user_sel} >> visible=true").count() == 0:
+        screenshot(page, "vegas_login_form_eltunt")
+        raise RuntimeError("Vegas: a belépő-űrlapot egy felugró ablak bezárta.")
 
-    for sel, value in (("input[name='email']", username),
-                       ("input[name='password']", password)):
+    for sel, value in ((f"{user_sel} >> visible=true", username),
+                       ("input[name='password'] >> visible=true", password)):
         human_click(page, page.locator(sel).first)
         page.keyboard.press("Control+A")
         page.keyboard.press("Delete")
@@ -246,7 +361,13 @@ def _login_once(page, username: str, password: str):
         time.sleep(_rand_ms(400, 800))
     log("  e-mail és jelszó megadva")
 
-    human_click(page, page.locator("button[class*='login__button']").first)
+    submit = page.locator("button.btn-action:has-text('Bejelentkezés') >> visible=true")
+    if submit.count() == 0:
+        submit = page.locator("button[class*='login__button'] >> visible=true")
+    if submit.count() == 0:
+        screenshot(page, "vegas_login_gomb_nincs")
+        raise RuntimeError("Vegas: a belépés gomb nem látszik (eltakarja egy ablak?)")
+    human_click(page, submit.first)
     log("  login elküldve, várakozás...")
     page.wait_for_timeout(5000)
     if _accept_terms(page):          # a szabályzat-ablak a belépés után ugrik fel
@@ -265,6 +386,8 @@ def ensure_logged_in(page, username: str, password: str, max_retries: int = 3):
         page.wait_for_timeout(2000)
         if is_logged_in(page):
             log("Vegas: bejelentkezés sikeres.")
+            _accept_terms_updated(page)
+            screenshot(page, "vegas_bejelentkezve")
             return
     screenshot(page, "vegas_login_vegul_sikertelen")
     raise RuntimeError(f"Vegas bejelentkezés {max_retries} kísérlet után is sikertelen.")
@@ -507,6 +630,7 @@ def _get_json(url: str) -> dict:
 
 
 def _event_details(event_id: str) -> dict:
+    _API_PARAMS["timezoneOffset"] = _tz_offset()
     p = {k: v for k, v in _API_PARAMS.items() if k not in ("eventType", "sportId")}
     p["eventId"] = event_id
     return _get_json(f"{_DETAILS_URL}?{urllib.parse.urlencode(p)}")

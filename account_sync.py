@@ -161,7 +161,7 @@ def mark_sent(day: str):
 # ── Fiók-lekérés (az iroda motor-szálán fut!) ─────────────────────────────────
 
 _TMX_NAPLO_URL = "https://www.tippmixpro.hu/hu/fogadas/i/naplo/settled/1"
-_VEGAS_MYBETS_URL = "https://vegas.hu/sports/my-bets"
+_VEGAS_MYBETS_URL = "https://vegas.hu/sports?page=betHistory"   # 2026-11-05 óta (új Vegas-oldal)
 # Altenar: a NEM nyitott fogadás-státuszok (1 = nyert, 2 = vesztes, 8 = visszatérített)
 _VEGAS_SETTLED = [1, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 18, 19, 21]
 
