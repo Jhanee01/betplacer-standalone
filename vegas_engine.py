@@ -29,7 +29,9 @@ from bet_engine import (
 from tip_parser import ParsedTip
 
 VEGAS_LOGIN_URL  = "https://vegas.hu/sports?modal=login"
-VEGAS_LEAGUE_URL = "https://vegas.hu/sports/elabdarugas/e-battles/{slug}"
+# 2026-11-05: az új oldalon a régi /sports/elabdarugas/e-battles/<liga> cím a sport-
+# főoldalra visz (ott nincs rajta a meccs) — a meccs saját oldalát nyitjuk meg.
+VEGAS_EVENT_URL  = "https://vegas.hu/sports?page=event&sportId=146&eventId={event_id}"
 
 # Az Altenar nyilvános API-ja (böngésző és bejelentkezés nélkül is válaszol).
 _API_URL = "https://hu-sb2frontend-altenar2.biahosted.com/api/widget/GetEvents"
@@ -493,8 +495,8 @@ def place_tip(page, tip: ParsedTip, username: str, password: str,
             page.wait_for_timeout(random.randint(8000, 15000))
             continue
 
-        # 2. A liga oldala, bejelentkezés-ellenőrzéssel.
-        url = VEGAS_LEAGUE_URL.format(slug=_slug(info["champ"]))
+        # 2. A meccs oldala, bejelentkezés-ellenőrzéssel.
+        url = VEGAS_EVENT_URL.format(event_id=tip.event_id)
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=PAGE_GOTO_TIMEOUT)
             try:
