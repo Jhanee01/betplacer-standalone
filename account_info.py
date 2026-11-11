@@ -44,6 +44,29 @@ def _kind(bm: str, url: str) -> str:
     return ""
 
 
+def _keepalive(tab) -> None:
+    """Felhasználói aktivitás (egérmozgás + kis görgetés) a Vegas-oldalon.
+
+    2026-11-11: a belépés után ~30 perccel a Vegas kiléptette a programot, pedig a
+    5 percenkénti fiókolvasás közben is ment — a szerverkérések nem számítanak
+    aktivitásnak, az oldal a böngészős bevitelt figyeli. Kiléptetés után pedig a
+    Cloudflare miatt csak kézzel lehet visszalépni. Ezért minden fiókolvasáskor
+    „mozgunk” a megnyitott Vegas-oldalon."""
+    import random
+    try:
+        for _ in range(3):
+            tab.mouse.move(random.randint(400, 1400), random.randint(250, 800),
+                           steps=random.randint(8, 20))
+            tab.wait_for_timeout(random.randint(150, 400))
+        dy = random.randint(120, 300)
+        tab.mouse.wheel(0, dy)
+        tab.wait_for_timeout(random.randint(300, 700))
+        tab.mouse.wheel(0, -dy)
+        tab.wait_for_timeout(500)
+    except Exception:
+        pass
+
+
 def read_info(engine, bm: str, timeout_s: int = 40) -> dict:
     """{'account', 'balance', 'open_count', 'open_stake'} — ami nem jött meg, kimarad."""
     page0 = engine._page
@@ -67,6 +90,8 @@ def read_info(engine, bm: str, timeout_s: int = 40) -> dict:
             if {"name", "balance", "open"} <= got.keys():
                 break
             tab.wait_for_timeout(500)
+        if bm == "vegas":
+            _keepalive(tab)
     finally:
         try:
             tab.close()
