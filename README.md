@@ -48,6 +48,9 @@ flowchart LR
   (`SetThreadExecutionState`). The display can still turn off.
 - **Self-updating** from GitHub Releases. The Update button downloads the new version and swaps
   it in, keeping user data.
+- **Manual Vegas sign-in when a human check is required.** If the site asks for a Cloudflare check,
+  the app doesn't try to pass it. The Vegas sign-in button opens regular Chrome, you sign in
+  yourself, and the app keeps that session for later runs.
 - **Dry-run mode** (`--dry-run`) runs the whole pipeline without submitting anything.
 
 ## Quick start

@@ -263,6 +263,7 @@ Telegram-csatorna
 | GUI nem nyílik meg | Futtasd: `python main.py --no-gui` |
 | Nem jön bot-értesítés | Nyomtál Start-ot a botnál? Állítsd be újra: `python main.py --setup` |
 | `Érvénytelen token` | Másold be újra a @BotFather-től kapott teljes tokent |
+| `Vegas: kézi belépés kell (Cloudflare-ellenőrzés)` | A Vegas fülön kattints a **Vegas belépés** gombra. Megnyílik a Chrome, ott lépj be (a jelszó a vágólapon van), pipáld be az ellenőrzést, majd kattints a **Kész, beléptem** gombra. A program elmenti a belépést, és onnan azzal fogad. Ha a Vegas indításkor kimaradt, állítsd le és indítsd újra a figyelést. Ehhez telepített Google Chrome kell. |
 
 ---
 

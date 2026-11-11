@@ -422,6 +422,12 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
             return
         if info:
             ds.set_office(bm, **info)
+            if bm == "vegas":
+                # a frissülő sütik mentése → újraindítás után sem kell újra belépni
+                try:
+                    await loop.run_in_executor(executors[bm], engines[bm].save_session)
+                except Exception:
+                    pass
             if info.get("open_count") and not awaiting[bm]:
                 # nyitott fogadás (pl. a program előző futásából) → elszámolás figyelése
                 awaiting[bm].append(datetime.now().timestamp() + SETTLE_RETRY_S)

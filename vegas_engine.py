@@ -14,6 +14,7 @@ Tippmixpro-motorban (bet_engine.human_click).
 
 import gzip
 import json
+import os
 import random
 import re
 import time
@@ -27,6 +28,11 @@ from bet_engine import (
     _LAUNCH_ARGS, VIEWPORT, PAGE_GOTO_TIMEOUT,
 )
 from tip_parser import ParsedTip
+from paths import APP_DIR
+
+# A Vegas bejelentkezett sessionje (sütik + localStorage) — gépenként, a frissítés
+# nem írja felül, nem kerül a repóba (.gitignore, make_release kizárja).
+VEGAS_SESSION_JSON = APP_DIR / "vegas_session.json"
 
 VEGAS_LOGIN_URL  = "https://vegas.hu/sports?modal=login"
 # 2026-11-05: az új oldalon a régi /sports/elabdarugas/e-battles/<liga> cím a sport-
@@ -329,10 +335,98 @@ def _dismiss_cookie(page):
     _cookie_consent(page)
 
 
+# ── Session megtartása + kézi belépés (2026-11-11) ────────────────────────────
+# A belépő-űrlapon Cloudflare „Igazolja, hogy Ön ember” ellenőrzés van; a program
+# ehhez NEM nyúl. A belépést a felhasználó végzi el kézzel (Vegas belépés gomb →
+# vegas_login_manual.py, sima Chrome-ban), a motor a mentett sessiont használja,
+# és belépve rendszeresen frissíti.
+
+class VegasManualLoginNeeded(RuntimeError):
+    """A Vegas belépéshez emberi ellenőrzés kell — újrapróbálkozásnak nincs értelme."""
+
+
+MANUAL_LOGIN_MSG = ("Vegas: kézi belépés kell (Cloudflare-ellenőrzés) — "
+                    "kattints a „Vegas belépés” gombra")
+_MANUAL_NOTIFIED = [0.0]
+_SESSION_APPLIED = [0.0]   # a contextbe utoljára betöltött sessionfájl mtime-ja
+
+
+def session_mtime() -> float:
+    try:
+        return VEGAS_SESSION_JSON.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def save_session(page) -> None:
+    """A context sütijei + localStorage-a a sessionfájlba (atomi csere)."""
+    try:
+        tmp = VEGAS_SESSION_JSON.with_suffix(".tmp")
+        page.context.storage_state(path=str(tmp))
+        os.replace(tmp, VEGAS_SESSION_JSON)
+        _SESSION_APPLIED[0] = session_mtime()
+    except Exception as e:
+        log(f"  Vegas session mentése sikertelen: {e}")
+
+
+def _apply_session_file(page) -> bool:
+    """Frissebb (pl. kézi belépésből származó) sessionfájl betöltése a meglévő
+    contextbe. True, ha betöltött valamit — utána újra kell tölteni az oldalt."""
+    mtime = session_mtime()
+    if not mtime or mtime <= _SESSION_APPLIED[0]:
+        return False
+    try:
+        state = json.loads(VEGAS_SESSION_JSON.read_text(encoding="utf-8"))
+        page.context.add_cookies(state.get("cookies", []))
+        origin = page.evaluate("() => location.origin")
+        for o in state.get("origins", []):
+            if o.get("origin") == origin:
+                page.evaluate("""(items) => { for (const it of items)
+                                     localStorage.setItem(it.name, it.value); }""",
+                              o.get("localStorage", []))
+        _SESSION_APPLIED[0] = mtime
+        log("  Vegas: frissebb mentett session betöltve (kézi belépésből)")
+        return True
+    except Exception as e:
+        log(f"  Vegas sessionfájl betöltése sikertelen: {e}")
+        return False
+
+
+def _human_check_pending(page, wait_ms: int = 4000) -> bool:
+    """True, ha az űrlapon Cloudflare emberi ellenőrzés van, és magától (a program
+    beavatkozása nélkül) nem engedett át. A widgethez a program nem nyúl."""
+    def present():
+        try:
+            if any("challenges.cloudflare.com" in (f.url or "") for f in page.frames):
+                return True
+            return page.locator("input[name='cf-turnstile-response']").count() > 0
+        except Exception:
+            return False
+
+    def passed():
+        try:
+            return page.evaluate("""() => [...document.querySelectorAll(
+                    'input[name="cf-turnstile-response"]')].some(i => i.value)""")
+        except Exception:
+            return False
+
+    page.wait_for_timeout(wait_ms)
+    if not present():
+        return False
+    for _ in range(10):
+        if passed():
+            return False
+        page.wait_for_timeout(1000)
+    return True
+
+
 def _login_once(page, username: str, password: str):
     log("Vegas: navigálás a belépéshez...")
     page.goto(VEGAS_LOGIN_URL, wait_until="domcontentloaded", timeout=PAGE_GOTO_TIMEOUT)
     page.wait_for_timeout(3000)
+    if _apply_session_file(page):
+        page.reload(wait_until="domcontentloaded", timeout=PAGE_GOTO_TIMEOUT)
+        page.wait_for_timeout(3000)
     _cookie_consent(page, wait_ms=10000)   # a süti-döntés MÉG az űrlap előtt
     _dismiss_cookie(page)
     if is_logged_in(page):
@@ -353,6 +447,9 @@ def _login_once(page, username: str, password: str):
     if page.locator(f"{user_sel} >> visible=true").count() == 0:
         screenshot(page, "vegas_login_form_eltunt")
         raise RuntimeError("Vegas: a belépő-űrlapot egy felugró ablak bezárta.")
+    if _human_check_pending(page):
+        screenshot(page, "vegas_emberi_ellenorzes")
+        raise VegasManualLoginNeeded(MANUAL_LOGIN_MSG)
 
     for sel, value in ((f"{user_sel} >> visible=true", username),
                        ("input[name='password'] >> visible=true", password)):
@@ -383,6 +480,14 @@ def ensure_logged_in(page, username: str, password: str, max_retries: int = 3):
         log(f"Vegas bejelentkezési kísérlet {attempt}/{max_retries}...")
         try:
             _login_once(page, username, password)
+        except VegasManualLoginNeeded as e:
+            log(f"  {e}")
+            if time.time() - _MANUAL_NOTIFIED[0] > 3600:
+                _MANUAL_NOTIFIED[0] = time.time()
+                _notify("⚠️ Vegas: a belépéshez emberi ellenőrzés (Cloudflare) kell, a "
+                        "BetPlacer nem tud belépni. Lépj be kézzel: BetPlacer → Vegas belépés. "
+                        "Utána a program magától folytatja.")
+            raise
         except Exception as e:
             log(f"  login hiba: {e}")
         page.wait_for_timeout(2000)
@@ -390,6 +495,8 @@ def ensure_logged_in(page, username: str, password: str, max_retries: int = 3):
             log("Vegas: bejelentkezés sikeres.")
             _accept_terms_updated(page)
             screenshot(page, "vegas_bejelentkezve")
+            save_session(page)
+            _MANUAL_NOTIFIED[0] = 0.0
             return
     screenshot(page, "vegas_login_vegul_sikertelen")
     raise RuntimeError(f"Vegas bejelentkezés {max_retries} kísérlet után is sikertelen.")
@@ -815,8 +922,20 @@ class VegasEngine:
         # (a sportfogadás-modul be sem töltődik) → normál Chrome UA.
         ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               f"(KHTML, like Gecko) Chrome/{self._browser.version} Safari/537.36")
-        context       = self._browser.new_context(viewport=VIEWPORT, locale="hu-HU",
-                                                  user_agent=ua)
+        extra = {}
+        if session_mtime():
+            # a mentett (akár kézi belépésből származó) session → nem kell belépni
+            extra["storage_state"] = str(VEGAS_SESSION_JSON)
+            _SESSION_APPLIED[0] = session_mtime()
+        try:
+            context = self._browser.new_context(viewport=VIEWPORT, locale="hu-HU",
+                                                user_agent=ua, **extra)
+        except Exception as e:
+            if not extra:
+                raise
+            log(f"  Vegas sessionfájl nem tölthető be ({e}) — session nélkül indul")
+            context = self._browser.new_context(viewport=VIEWPORT, locale="hu-HU",
+                                                user_agent=ua)
         self._page    = context.new_page()
         _install_resource_blocker(self._page)
         ensure_logged_in(self._page, self._username, self._password)
@@ -836,6 +955,11 @@ class VegasEngine:
             pass
         self._page    = None
         self._browser = None
+
+    def save_session(self) -> None:
+        """Belépve a frissülő sütik mentése (a fiókadat-frissítés hívja)."""
+        if self._page is not None and is_logged_in(self._page):
+            save_session(self._page)
 
     def place(self, tip: ParsedTip, stake: int = None) -> str:
         """Visszatérés: 'ok' | 'fail' | 'notfound' | 'line_changed'."""

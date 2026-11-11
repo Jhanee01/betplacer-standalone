@@ -387,7 +387,18 @@ class MainView(QWidget):
         self._con_btn = con_btn
         self._tg_pill = _lbl("", size=11, weight=700)
         self._bot_pill = _lbl("", size=11, weight=700)
-        for wdg in (self._tg_pill, self._bot_pill, self._pill, self._toggle_btn, con_btn):
+        # Vegas kézi belépés (Cloudflare-ellenőrzés miatt, 2026-11-11): a sima Chrome
+        # nyílik meg, a felhasználó lép be, a session a Vegas-motorhoz kerül.
+        self._vegas_login_btn = QPushButton("Vegas belépés")
+        self._vegas_login_btn.setObjectName("bpGold")
+        self._vegas_login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._vegas_login_btn.setToolTip("Megnyílik a Chrome: lépj be kézzel (a jelszó a vágólapon), "
+                                         "majd kattints a „Kész, beléptem” gombra.")
+        self._vegas_login_btn.clicked.connect(self._start_vegas_login)
+        self._vegas_login_btn.setVisible(False)      # csak a Vegas fülön
+        self._vegas_login_proc = None
+        for wdg in (self._tg_pill, self._bot_pill, self._pill, self._vegas_login_btn,
+                    self._toggle_btn, con_btn):
             head.addWidget(wdg, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(head)
 
@@ -621,7 +632,45 @@ class MainView(QWidget):
     def _select(self, key: str):
         self._office = key
         self._bets_key = None
+        self._vegas_login_btn.setVisible(key == "vegas")
         self.refresh()
+
+    def _start_vegas_login(self):
+        import sys
+        from pathlib import Path
+        from PySide6.QtCore import QProcess, QProcessEnvironment
+        if self._vegas_login_proc is not None:
+            # második kattintás: „Kész, beléptem” → a script csatlakozik és ment
+            self._vegas_login_proc.write(b"done\n")
+            self._vegas_login_btn.setEnabled(False)
+            self._vegas_login_btn.setText("Session mentése…")
+            return
+        script = Path(__file__).resolve().parent / "vegas_login_manual.py"
+        proc = QProcess(self)
+        proc.setWorkingDirectory(str(script.parent))
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONIOENCODING", "utf-8")
+        env.insert("PYTHONUNBUFFERED", "1")
+        proc.setProcessEnvironment(env)
+        proc.readyReadStandardOutput.connect(
+            lambda: [self.append_log(f"[Vegas belépés] {ln}") for ln in
+                     bytes(proc.readAllStandardOutput()).decode("utf-8", "replace").splitlines()
+                     if ln.strip()])
+        proc.finished.connect(self._vegas_login_done)
+        self._vegas_login_proc = proc
+        self._vegas_login_btn.setText("Kész, beléptem")
+        proc.start(sys.executable, [str(script)])
+
+    def _vegas_login_done(self, code: int, _status=None):
+        self._vegas_login_proc = None
+        self._vegas_login_btn.setEnabled(True)
+        self._vegas_login_btn.setText("Vegas belépve ✓" if code == 0 else "Vegas belépés")
+        if code == 0:
+            self.append_log("[Vegas belépés] A Vegas-motor a következő tippnél ezt a sessiont "
+                            "használja. Ha a Vegas az induláskor kimaradt, állítsd le és "
+                            "indítsd újra a figyelést.", "ok")
+            QTimer.singleShot(8000, lambda: self._vegas_login_btn.setText("Vegas belépés"))
 
     def _set_cumulative(self, cum: bool):
         self._cumulative = cum

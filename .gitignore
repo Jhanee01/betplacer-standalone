@@ -34,3 +34,8 @@ _release_staging/
 build/
 dist/
 *.spec
+
+# Vegas bejelentkezett session + kezi belepes Chrome-profilja (gepenkent, titok)
+vegas_session.json
+vegas_login_done.flag
+vegas_chrome_profile/
