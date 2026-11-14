@@ -17,9 +17,11 @@ import json
 import os
 import random
 import re
+import subprocess
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -358,9 +360,159 @@ def session_mtime() -> float:
         return 0.0
 
 
+# ── Vegas a VALÓDI Chrome-ban (a dashboard v3.1.5 mintájára, 2026-11-14) ──────────
+# Eddig a kézi belépés a sima Chrome-ban történt, a motor viszont a saját headless
+# Chromiumjába másolta át a sütiket. A Cloudflare engedélye a valódi Chrome-hoz
+# kötődik, így a headless fülön a session rendre elveszett (néhány perc – ~1 óra).
+# Most a motor a Vegas-fület abban a Chrome-ban (saját profil, CDP) vezérli,
+# amelyikben a felhasználó belépett: nincs session-másolás. Ha a Chrome nem
+# indítható, a régi headless út a tartalék.
+REAL_CHROME = True
+CDP_PORT = 9335                      # a dashboardé 9334 — a kettő egy gépen is megfér
+PROFILE_DIR = APP_DIR / "vegas_chrome_profile"
+VEGAS_URL = "https://vegas.hu/sports"
+CHROME_CANDIDATES = [
+    Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Google/Chrome/Application/chrome.exe",
+    Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Google/Chrome/Application/chrome.exe",
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+]
+
+
+def find_chrome() -> Path | None:
+    return next((p for p in CHROME_CANDIDATES if p.is_file()), None)
+
+
+def chrome_flags() -> list[str]:
+    # A takart ablak se lassuljon le: a Vegas-oldal időzítői (token-frissítés) és a
+    # motor olvasásai így akkor is mennek, ha más ablak van elöl.
+    return [f"--user-data-dir={PROFILE_DIR}",
+            f"--remote-debugging-port={CDP_PORT}",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding",
+            "--disable-backgrounding-occluded-windows"]
+
+
+def set_window(page, visible: bool) -> None:
+    """A Vegas-Chrome ablaka a képernyőre (kézi belépéshez) vagy a képernyőn kívülre
+    (a motor munkája alatt ne legyen útban). NEM kicsinyítjük le: a lekicsinyített
+    ablakban a képernyőkép/kattintás elakadhat, a képernyőn kívüliben nem."""
+    try:
+        cs = page.context.new_cdp_session(page)
+        win = cs.send("Browser.getWindowForTarget")["windowId"]
+        cs.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"windowState": "normal"}})
+        bounds = ({"left": 80, "top": 40, "width": 1400, "height": 950} if visible else
+                  {"left": -32000, "top": -32000, "width": 1800, "height": 1000})
+        cs.send("Browser.setWindowBounds", {"windowId": win, "bounds": bounds})
+        if visible:
+            page.bring_to_front()
+        cs.detach()
+    except Exception as e:
+        log(f"  Vegas-ablak {'előhozása' if visible else 'elrejtése'} sikertelen: {e}")
+
+
+def cdp_alive() -> bool:
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=3).read()
+        return True
+    except Exception:
+        return False
+
+
+def chrome_start(wait_s: int = 25) -> bool:
+    """A Vegas-Chrome elindítása (ha még nem fut). True, ha a CDP elérhető.
+
+    A `cmd /c start` miatt a Chrome NEM a BetPlacer gyereke: a BetPlacer leállítása
+    nem zárja be, így a belépett session megmarad."""
+    if cdp_alive():
+        return True
+    chrome = find_chrome()
+    if chrome is None:
+        log("  Vegas: nincs telepített Google Chrome — headless tartalék")
+        return False
+    PROFILE_DIR.mkdir(exist_ok=True)
+    log("Vegas: a Vegas-Chrome indítása...")
+    subprocess.Popen(["cmd", "/c", "start", "", str(chrome), *chrome_flags(), VEGAS_URL],
+                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        if cdp_alive():
+            return True
+        time.sleep(1)
+    log("  Vegas-Chrome nem indult el időben — headless tartalék")
+    return False
+
+
+def keepalive(page) -> None:
+    """Felhasználói aktivitás (egérmozgás + kis görgetés) a Vegas-oldalon.
+
+    2026-11-11: a Vegas ~30 perc inaktivitás után kiléptet — a szerverkérések nem
+    számítanak aktivitásnak, az oldal a böngészős bevitelt figyeli."""
+    try:
+        for _ in range(3):
+            page.mouse.move(random.randint(400, 1400), random.randint(250, 800),
+                            steps=random.randint(8, 20))
+            page.wait_for_timeout(random.randint(150, 400))
+        dy = random.randint(120, 300)
+        page.mouse.wheel(0, dy)
+        page.wait_for_timeout(random.randint(300, 700))
+        page.mouse.wheel(0, -dy)
+        page.wait_for_timeout(500)
+    except Exception:
+        pass
+
+
+# A sessionStorage-ot a Playwright storage_state NEM menti. E nélkül a headless
+# motor a Vegas-tokent nem tudta megújítani, és ~60 perccel a kézi belépés után
+# kiléptette a Vegas. Ezért külön fájlba mentjük, és a headless fülre visszatöltjük
+# (a valódi Chrome-ban a Vegas maga kezeli).
+VEGAS_SS_JSON = APP_DIR / "vegas_session_storage.json"
+_VEGAS_ORIGIN = "https://vegas.hu"
+
+
+def save_session_storage(page) -> int:
+    """A fül sessionStorage-a a VEGAS_SS_JSON-ba. Az elemszám, vagy -1 hibánál."""
+    try:
+        if page.evaluate("() => location.origin") != _VEGAS_ORIGIN:
+            return -1
+        items = page.evaluate("() => Object.entries(sessionStorage)")
+        if not items:
+            return 0                  # üres fülről ne írjuk felül a jót
+        tmp = VEGAS_SS_JSON.with_suffix(".tmp")
+        tmp.write_text(json.dumps(items), encoding="utf-8")
+        os.replace(tmp, VEGAS_SS_JSON)
+        return len(items)
+    except Exception as e:
+        log(f"  Vegas sessionStorage mentése sikertelen: {e}")
+        return -1
+
+
+def _load_ss() -> list:
+    try:
+        items = json.loads(VEGAS_SS_JSON.read_text(encoding="utf-8"))
+        return items if isinstance(items, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def install_session_storage(page) -> None:
+    """Headless fülre: minden betöltéskor, az oldal saját scriptjei ELŐTT pótolja a
+    mentett sessionStorage-elemeket (csak a hiányzókat)."""
+    items = _load_ss()
+    if not items:
+        return
+    page.add_init_script(script="""(([origin, items]) => {
+        if (location.origin !== origin) return;
+        try { for (const [k, v] of items)
+                  if (sessionStorage.getItem(k) === null) sessionStorage.setItem(k, v);
+        } catch (e) {}
+    })(%s)""" % json.dumps([_VEGAS_ORIGIN, items]))
+
+
 def save_session(page) -> None:
     """A context sütijei + localStorage-a a sessionfájlba (atomi csere)."""
     try:
+        save_session_storage(page)       # előbb: a session-fájl mtime-ja a jel
         tmp = VEGAS_SESSION_JSON.with_suffix(".tmp")
         page.context.storage_state(path=str(tmp))
         os.replace(tmp, VEGAS_SESSION_JSON)
@@ -384,6 +536,10 @@ def _apply_session_file(page) -> bool:
                 page.evaluate("""(items) => { for (const it of items)
                                      localStorage.setItem(it.name, it.value); }""",
                               o.get("localStorage", []))
+        if origin == _VEGAS_ORIGIN:
+            # a kézi belépés friss sessionStorage-a
+            page.evaluate("""(items) => { for (const [k, v] of items)
+                                 sessionStorage.setItem(k, v); }""", _load_ss())
         _SESSION_APPLIED[0] = mtime
         log("  Vegas: frissebb mentett session betöltve (kézi belépésből)")
         return True
@@ -912,11 +1068,39 @@ class VegasEngine:
         self._pw       = None
         self._browser  = None
         self._page     = None
+        self._real     = False
         self.last_error   = ""   # az utolsó sikertelen fogadás oka (értesítéshez)
         self.last_bet_ref = ""   # az utolsó sikeres fogadás szelvény-ID-je
 
+    def _real_page(self):
+        """Fül a valódi Vegas-Chrome-ban (meglévő vegas.hu fül, vagy új). None, ha a
+        Chrome nem indítható / nem csatlakoztatható — akkor a headless út marad."""
+        if not REAL_CHROME or not chrome_start():
+            return None
+        try:
+            self._browser = self._pw.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
+            ctx = self._browser.contexts[0]
+            page = next((pg for pg in ctx.pages if "vegas.hu" in (pg.url or "")), None)
+            return page or ctx.new_page()
+        except Exception as e:
+            log(f"  Vegas-Chrome csatlakozás sikertelen ({e}) — headless tartalék")
+            self._browser = None
+            return None
+
     def start(self):
-        self._pw      = sync_playwright().__enter__()
+        self._pw   = sync_playwright().__enter__()
+        self._real = False
+        page = self._real_page()
+        if page is not None:
+            log("Vegas: a fül a valódi Chrome-ban fut (CDP, képernyőn kívüli ablak)")
+            set_window(page, visible=False)
+            # a profil saját (friss) belépését ne írja felül egy régebbi sessionfájl
+            _SESSION_APPLIED[0] = session_mtime()
+            self._real = True
+            self._page = page
+            ensure_logged_in(self._page, self._username, self._password)
+            log("VegasEngine kész (valódi Chrome).")
+            return
         self._browser = self._pw.chromium.launch(headless=True, args=_LAUNCH_ARGS)
         # 2026-10-21: az Altenar Cloudflare-je 403-mal tiltja a „HeadlessChrome” UA-t
         # (a sportfogadás-modul be sem töltődik) → normál Chrome UA.
@@ -937,12 +1121,25 @@ class VegasEngine:
             context = self._browser.new_context(viewport=VIEWPORT, locale="hu-HU",
                                                 user_agent=ua)
         self._page    = context.new_page()
+        install_session_storage(self._page)
         _install_resource_blocker(self._page)
         ensure_logged_in(self._page, self._username, self._password)
-        _park(self._page)   # az első tippig ne tartsunk nyitva élő oldalt
+        self._idle()   # az első tippig ne tartsunk nyitva élő oldalt
         log("VegasEngine kész.")
 
+    @property
+    def real(self) -> bool:
+        return getattr(self, "_real", False)
+
+    def _idle(self):
+        """Tippek között: headlessben üres lapra parkol; a valódi Chrome-ban a Vegas-
+        oldalon marad (az időzítői frissítik a tokent, az életjel ott mozog)."""
+        if not self.real:
+            _park(self._page)
+
     def stop(self):
+        # A valódi Chrome-nál a close() csak a CDP-kapcsolatot bontja: a Chrome és
+        # benne a belépés megmarad.
         try:
             if self._browser:
                 self._browser.close()
@@ -978,7 +1175,7 @@ class VegasEngine:
         finally:
             self.last_error   = out.get("error", "")
             self.last_bet_ref = out.get("bet_ref", "")
-            _park(self._page)
+            self._idle()
 
     def place_real(self, tip, stake: int = None) -> str:
         """Real Event tipp. Visszatérés: 'ok' | 'fail' | 'skipped'."""
@@ -997,4 +1194,4 @@ class VegasEngine:
         finally:
             self.last_error   = out.get("error", "")
             self.last_bet_ref = out.get("bet_ref", "")
-            _park(self._page)
+            self._idle()

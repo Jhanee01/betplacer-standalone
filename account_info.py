@@ -82,7 +82,11 @@ def read_info(engine, bm: str, timeout_s: int = 40) -> dict:
         except Exception:
             pass
 
-    tab = context.new_page()
+    # Vegas a valódi Chrome-ban: a fő fülön olvasunk (két egyszerre futó Vegas-oldal
+    # tokenfrissítése ütközhet — a dashboard tapasztalata, 2026-11-11). A fő fül
+    # tétlen, a következő tippnél úgyis a meccs oldalára navigál.
+    same_tab = bm == "vegas" and getattr(engine, "real", False)
+    tab = page0 if same_tab else context.new_page()
     tab.on("response", on_response)
     try:
         tab.goto(_PAGES[bm], wait_until="domcontentloaded", timeout=60000)
@@ -93,10 +97,16 @@ def read_info(engine, bm: str, timeout_s: int = 40) -> dict:
         if bm == "vegas":
             _keepalive(tab)
     finally:
-        try:
-            tab.close()
-        except Exception:
-            pass
+        if same_tab:
+            try:
+                tab.remove_listener("response", on_response)
+            except Exception:
+                pass
+        else:
+            try:
+                tab.close()
+            except Exception:
+                pass
 
     out: dict = {}
     name, bal, opn = got.get("name"), got.get("balance"), got.get("open")

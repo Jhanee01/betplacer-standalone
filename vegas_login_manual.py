@@ -33,19 +33,34 @@ from playwright.sync_api import sync_playwright
 import vegas_engine as ve
 
 WAIT_S = 900
-CDP_PORT = 9335
-VEGAS_URL = "https://vegas.hu/sports"
-PROFILE_DIR = APP_DIR / "vegas_chrome_profile"
+# 2026-11-14: ugyanaz a Chrome (profil + CDP-port), amelyikben a Vegas-motor a fület
+# vezérli — a belépés így azonnal a motor fülén is érvényes, és a Chrome nyitva marad.
+CDP_PORT = ve.CDP_PORT
+VEGAS_URL = ve.VEGAS_URL
+PROFILE_DIR = ve.PROFILE_DIR
 DONE_FLAG = APP_DIR / "vegas_login_done.flag"
-CHROME_CANDIDATES = [
-    Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Google/Chrome/Application/chrome.exe",
-    Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Google/Chrome/Application/chrome.exe",
-    Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
-]
 
 
 def _say(msg: str) -> None:
     print(msg, flush=True)
+
+
+def _vegas_windows(show: bool) -> None:
+    """A Vegas-Chrome vegas.hu ablakának előhozása (belépéshez) vagy a képernyőn
+    kívülre tétele (belépés után; a motor ott dolgozik)."""
+    deadline = time.time() + 30
+    while not ve.cdp_alive() and time.time() < deadline:
+        time.sleep(1)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
+            pages = [pg for ctx in browser.contexts for pg in ctx.pages
+                     if "vegas.hu" in (pg.url or "")]
+            for pg in (pages[-1:] if show else pages):   # előhozni: a legújabbat
+                ve.set_window(pg, visible=show)
+            browser.close()                               # csak a kapcsolat bontása
+    except Exception as e:
+        _say(f"  (ablak {'előhozása' if show else 'elrejtése'} nem sikerült: {e})")
 
 
 def _wait_for_signal(proc: subprocess.Popen) -> bool:
@@ -60,10 +75,15 @@ def _wait_for_signal(proc: subprocess.Popen) -> bool:
 
     threading.Thread(target=stdin_reader, daemon=True).start()
     deadline = time.time() + WAIT_S
+    started = time.time()
     while time.time() < deadline:
         if got.is_set() or DONE_FLAG.exists():
             return True
-        if proc.poll() is not None:
+        # Ha ezzel a profillal már fut a Chrome (a motoré), az indító azonnal kilép,
+        # és a meglévő Chrome-ban nyílik az ablak — ez NEM bezárt ablak. Akkor adjuk
+        # fel, ha a böngésző tényleg nem fut (az indulásra 30 mp-et várunk).
+        if (proc.poll() is not None and not ve.cdp_alive()
+                and time.time() - started > 30):
             return False
         time.sleep(1)
     return False
@@ -72,16 +92,19 @@ def _wait_for_signal(proc: subprocess.Popen) -> bool:
 def main() -> int:
     user = os.getenv("VEGAS_USER", "")
     pw = os.getenv("VEGAS_PASS", "")
-    chrome = next((p for p in CHROME_CANDIDATES if p.is_file()), None)
+    chrome = ve.find_chrome()
     if chrome is None:
         _say("Nem találom a telepített Google Chrome-ot — telepítsd, és próbáld újra.")
         return 1
     DONE_FLAG.unlink(missing_ok=True)
     PROFILE_DIR.mkdir(exist_ok=True)
-    proc = subprocess.Popen([str(chrome), f"--user-data-dir={PROFILE_DIR}",
-                             f"--remote-debugging-port={CDP_PORT}",
-                             "--no-first-run", "--no-default-browser-check",
-                             "--new-window", VEGAS_URL])
+    # `cmd /c start`: a Chrome ne a BetPlacer folyamatfájának része legyen (leállításkor
+    # ne zárják be), és belépés után nyitva maradjon a motornak.
+    proc = subprocess.Popen(["cmd", "/c", "start", "", str(chrome), *ve.chrome_flags(),
+                             "--new-window", VEGAS_URL],
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    time.sleep(3)                    # az új ablak betöltődjön
+    _vegas_windows(show=True)        # a motor ablaka a képernyőn kívül van — előhozzuk
     if pw:
         subprocess.run("clip", input=pw.encode("utf-16-le"), check=False)
     _say("Megnyílt a Chrome a vegas.hu-val. Lépj be kézzel:")
@@ -133,10 +156,15 @@ def main() -> int:
             os.replace(tmp, ve.VEGAS_SESSION_JSON)
         except Exception as e:
             _say(f"  localStorage mentése sikertelen: {e}")
-        browser.close()             # CDP-kapcsolat bontása
+        # A Chrome NYITVA marad: a Vegas-motor ugyanebben vezérli a fület.
+        try:
+            browser.close()         # csak a CDP-kapcsolat bontása
+        except Exception:
+            pass
     DONE_FLAG.unlink(missing_ok=True)
-    proc.terminate()                # a Chrome bezárása (a profil megmarad)
-    _say("Vegas: belépve, session elmentve.")
+    _vegas_windows(show=False)
+    _say("Vegas: belépve. A Chrome-ablak a képernyőn kívülre került, de fut tovább "
+         "(a tálcán látszik) — ne zárd be, a BetPlacer ebben fogad.")
     return 0
 
 
