@@ -229,7 +229,8 @@ def _fetch_vegas(context, page, since: str) -> list:
                    if k.lower() in ("authorization", "content-type", "accept")}
         resp = page.evaluate(
             """async ([url, headers, body]) => {
-                const r = await fetch(url, {method: 'POST', headers, body, credentials: 'omit'});
+                const r = await fetch(url, {method: 'POST', headers, body, credentials: 'omit',
+                                            signal: AbortSignal.timeout(30000)});
                 return {status: r.status, text: await r.text()};
             }""", [first["url"], headers, json.dumps(body)])
         if resp["status"] != 200:
@@ -250,15 +251,21 @@ def fetch_account(engine, bookmaker: str, since: str) -> list:
     """Az iroda kiértékelt fogadásai `since` (YYYY-MM-DD) óta, egységes sorokként.
     A motor saját szálán kell hívni (run_in_executor az iroda executorával)."""
     context = engine._page.context
-    page = context.new_page()
+    # Vegas: a motor SAJÁT fülén (2026-11-18). A valódi Chrome-ban egy második Vegas-fül
+    # nem tölt be / ütközik a tokenfrissítéssel (kiléptetheti a munkamenetet), új
+    # belépést pedig a Cloudflare-ellenőrzés nem enged. A motor minden fogadás előtt
+    # úgyis a ligaoldalra navigál, így a fül Fogadásaim-oldalon hagyása nem zavar.
+    own = bookmaker == "vegas"
+    page = engine._page if own else context.new_page()
     try:
-        fn = _fetch_vegas if bookmaker == "vegas" else _fetch_tmx
+        fn = _fetch_vegas if own else _fetch_tmx
         return fn(context, page, since)
     finally:
-        try:
-            page.close()
-        except Exception:
-            pass
+        if not own:
+            try:
+                page.close()
+            except Exception:
+                pass
 
 
 def _local(iso: str):
