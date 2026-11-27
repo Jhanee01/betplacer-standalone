@@ -1162,9 +1162,10 @@ class BetEngine:
             pass
         try:
             if self._pw:
-                self._pw.__exit__(None, None, None)
+                self._pw.stop()
         except Exception:
             pass
+        self._pw      = None
         self._page    = None
         self._context = None
         self._browser = None

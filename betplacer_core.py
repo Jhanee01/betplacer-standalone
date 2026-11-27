@@ -396,6 +396,11 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
             await loop.run_in_executor(ex, eng.stop)
         except Exception:
             pass
+        # Friss szál: ha a régi Playwright esemény-hurka beragadt a szálban, ott a
+        # sync API nem indul újra („Sync API inside the asyncio loop”).
+        ex.shutdown(wait=False)
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        executors[bm] = ex
         try:
             await loop.run_in_executor(ex, eng.start)
         except Exception as e:
@@ -455,7 +460,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
         src   = tip.source or bm
         real  = getattr(tip, "kind", "") == "real"
         tag   = f"[{tip.bookmaker_label}]"
-        engine, executor = engines[bm], executors[bm]
+        engine = engines[bm]
         delay = random.uniform(30, 120)   # tippenként külön sorsolva
         # Szoros kezdésnél a várakozás nem csúsztathatja a megrakást a kezdés utánra:
         # legkésőbb TIGHT_KICKOFF_S-mal a kezdés előtt induljon.
@@ -495,7 +500,7 @@ async def run_session(log, foot=None, stop_event=None, on_status=None):
                 _status(key, tip, "placing")
                 try:
                     result = await loop.run_in_executor(
-                        executor, lambda: place_fn(tip, tip_stake))
+                        executors[bm], lambda: place_fn(tip, tip_stake))
                 except Exception as e:
                     log(f"{tag} Kivétel a fogadás során: {e}", "error")
                     traceback.print_exc()
